@@ -1,0 +1,82 @@
+module_info:
+  name: "HALO Admin Utility"
+  version: "0.1.0"
+  acronym: "HAU"
+  category: "Utility"
+  description: "Primary operational control plane to provision, govern, and monitor HALO customer tenants."
+
+system_services:
+  grpc:
+    service_name: "hau-grpc.service"
+    service_type: "grpc"
+    host: "0.0.0.0"
+    port: 50121
+    max_workers: 10
+
+logging:
+  level: "INFO"
+  directory: "/ai/assets/logs/hau_utility"
+  enable_file_logging: true
+  app_log_filename: "hau.log"
+  error_log_filename: "hau_err.log"
+
+paths:
+  proto_source_dir: "grpc_api/protos"
+  sera_proto_source_dir: "/ai/assets/protos/sera_standard"
+  generated_stubs_path: "/ai/assets/protos/halo_admin_utility/generated"
+
+database:
+  write_dsn: "postgresql://ham_admin_prod_user:EUfOKcHxXpSCdQl10W5IwWGw@slo-aif-hadb.slo.gt-t.net:5432/ham_admin_prod_db"
+  read_dsn: "postgresql://ham_admin_prod_user:EUfOKcHxXpSCdQl10W5IwWGw@slo-aif-ha.slo.gt-t.net:5433/ham_admin_prod_db"
+
+external_services:
+  vault:
+    dependency_name: "vault-aif_api"
+    type: "rest_api"
+    url: "https://vault-aif.gt-t.net:8200"
+    role_id: "3ff185c1-1acf-1506-ec4e-c8db52b8313e"
+    secret_id: "f62ee536-f4fa-18e6-ab84-bf2fb79837ac"
+  gitlab:
+    dependency_name: "gitlab_api"
+    type: "rest_api"
+    url: "https://gitlab.gt-t.net"
+    bot_username: "gia-ai"
+    bot_token: "glpat-5hh1RgoaFNjYUWqeoaRto286MQp1OmQ1CA.01.0y0u9a018"
+    project_path: "ai/halo"
+    local_clone_path: "/ai/utilities/halo_admin_utility/cache/halo"
+
+rancher_clusters:
+  prg:
+    url: "https://prg-aif-rancher.prg.gt-t.net"
+    cluster_name: "prg-aif-clu01"
+    halo_cluster_name: "prg-hal-clu01"
+    gpu_cluster_name: "prg-aif-nvclu01"
+    token: "token-4d99z:spvbdqh769qj5nk254p224lzc6j8qzxbwhmq8kx76ch8v7cbpmf49q"
+  slo:
+    url: "https://slo-aif-rancher.slo.gt-t.net"
+    cluster_name: "slo-aif-clu01"
+    halo_cluster_name: "slo-hal-clu01"
+    gpu_cluster_name: "slo-aif-nvclu01"
+    token: "token-7sfj8:hsqn4bwkpz2pmdz2qxwcxczd6mrs5fpxrnspvk8bw7xcdndtvrrb49"
+  nyc:
+    url: "https://nyc-aif-rancher.nyh.gt-t.net"
+    cluster_name: "nyc-aif-clu01"
+    halo_cluster_name: "nyc-hal-clu01"
+    gpu_cluster_name: "nyc-aif-nvclu01"
+    token: "token-xrhz2:lf4vknpmxtc9llcdqfw7ttvlcjctnfwbdgrx26w54qf9b5vb7qz7wl"
+
+auth:
+  auth_url: "https://keycloak-aif.gt-t.net/realms/aif-llm/protocol/openid-connect/token"
+  client_id: "gia-test"
+  client_secret: "sYnfJ36CZp1GxCm3lxt3g6MSdY3pw0Ih"
+
+llm_engines:
+  primary:
+    provider: "vllm"
+    base_url: "https://aif-llm-gemma4-31b.aif.gt-t.net"
+    api_endpoint: "/v1/chat/completions"
+    model: "google/gemma-4-31B-it"
+    timeout_seconds: 300
+    ssl_verify: false
+    max_tokens: 32768
+    enable_thinking: "enable"

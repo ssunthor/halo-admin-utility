@@ -1,0 +1,128 @@
+syntax = "proto3";
+
+package hau;
+
+service HauService {
+  rpc GitContainers(GitContainersRequest) returns (GitContainersResponse);
+  rpc GitSync(GitSyncRequest) returns (GitSyncResponse);
+  rpc GitListCache(GitListCacheRequest) returns (GitListCacheResponse);
+  rpc GitPush(GitPushRequest) returns (GitPushResponse);
+  rpc GitCheckout(GitCheckoutRequest) returns (GitCheckoutResponse);
+  rpc InventorySync(InventorySyncRequest) returns (InventorySyncResponse);
+  rpc InventoryList(InventoryListRequest) returns (InventoryListResponse);
+  rpc GenerateChangelog(GenerateChangelogRequest) returns (GenerateChangelogResponse);
+  rpc GitBackfillChangelog(GitBackfillRequest) returns (stream GitBackfillResponse);
+  rpc GitRelease(GitReleaseRequest) returns (stream GitReleaseResponse);
+  rpc GitRetry(GitRetryRequest) returns (stream GitRetryResponse);
+}
+
+message InventorySyncRequest {}
+
+message InventorySyncResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message InventoryListRequest {
+  string tenant_slug = 1;
+}
+
+message InventoryListResponse {
+  bool success = 1;
+  string message = 2;
+  string result_json = 3;
+}
+
+message GitContainersRequest {}
+
+message GitContainersResponse {
+  bool success = 1;
+  string message = 2;
+  string result_json = 3;
+}
+
+message GitSyncRequest {
+  string target = 1;
+}
+
+message GitSyncResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GitListCacheRequest {}
+
+message GitListCacheResponse {
+  bool success = 1;
+  string message = 2;
+  string result_json = 3;
+}
+
+message GitPushRequest {
+  string commit_message = 1;
+}
+
+message GitPushResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GitCheckoutRequest {
+  string project_name = 1;
+  string branch_name = 2;
+}
+
+message GitCheckoutResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GenerateChangelogRequest {
+  string project_name = 1;
+  string branch_name = 2;
+}
+
+message GenerateChangelogResponse {
+  bool success = 1;
+  string message = 2;
+  string changelog_yaml = 3;
+}
+
+message GitBackfillRequest {
+  string project_name = 1;
+  string branch_name = 2;
+  string start_version = 3;
+}
+
+message GitBackfillResponse {
+  bool success = 1;
+  string message = 2;
+  string changelog_yaml = 3; // Populated only at the end
+}
+
+message GitReleaseRequest {
+  string project_name = 1;
+  string source_branch = 2;
+  string target_branch = 3;
+  bool skip_changelog_generation = 4;
+  bool debug = 5;
+  bool keep_branch = 6;
+}
+
+message GitReleaseResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GitRetryRequest {
+  string project_name = 1;
+  int32 pipeline_id = 2;
+  bool debug = 3;
+  int32 merge_id = 4;
+  bool skip_warnings = 5;
+}
+
+message GitRetryResponse {
+  bool success = 1;
+  string message = 2;
+}

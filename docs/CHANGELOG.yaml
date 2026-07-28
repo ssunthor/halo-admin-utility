@@ -1,0 +1,109 @@
+# ---------------------------------------------------------------------------
+# HALO ADMIN UTILITY (HAU) - CHANGELOG
+#
+# NOTE FOR CONTRIBUTORS:
+# Please add the tag `[NEEDS_DOCS]` to the end of any item
+# that introduces a significant change to logic, architecture, or
+# core functionality. This serves as a reminder to update the
+# main `hau_design.md` document to reflect the change.
+#
+# STANDARD CATEGORIES:
+# - "🚀 Architecture & Infrastructure"
+# - "✨ New Features & Enhancements"
+# - "🎨 UI / UX Improvements"
+# - "🐛 Bug Fixes & Resilience"
+# - "🔒 Security & Auth"
+# - "🧹 Refactoring & Chores"
+# ---------------------------------------------------------------------------
+- version: '0.0.6'
+  date: '2026-07-28'
+  author: 'Martin Kecka'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Added CLI telemetry to `hau git release` and `hau git retry` to output precise job execution times (pulled natively from the GitLab API) and the final container registry footprint size.'
+        - 'Updated the `hau git retry` CLI command and endpoint to natively accept `--merge` arguments, automatically finding and retrying the latest pipeline attached to a given Merge Request.'
+        - 'Enhanced release error handling to explicitly output the exact `python3 halo_admin_utility.py git retry --merge <id>` CLI command required to resume the release process if a merge or pipeline fails.'
+        - 'Added `--skip-warnings` option to `hau git retry` to allow seamlessly bypassing pipeline retries for jobs that are allowed to fail.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Fixed a race condition causing double pipeline triggers during release by properly injecting `-o ci.skip` when the orchestrator pushes the auto-generated changelog.'
+        - 'Fixed silent API failures during `git retry` on skipped MR pipelines by automatically spawning a fresh MR pipeline when the `.retry()` API call is unsupported.'
+        - 'Resolved a race condition when fetching container footprints by dynamically deriving the target tag from the MR source branch instead of relying on unpredictable API timestamp sorting.'
+        - 'Injected `[skip ci]` into the merge commit message during manual `git retry` flows to prevent GitLab from spawning duplicate rogue pipelines on the target branch.'
+        - 'Fixed a strict orchestration polling bug where MR monitoring would prematurely abort if it intercepted the MR during a temporary `locked` transition state.'
+        - 'Corrected misleading pipeline logging where active pipelines finalizing their status were falsely labeled as "Waiting for jobs to start...".'
+
+- version: '0.0.5'
+  date: '2026-07-27'
+  author: 'Martin Kecka'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented the complete `hau git release` CLI workflow to automate GitLab project releases natively through the HAU gRPC service.'
+        - 'Added the `GitRelease` streaming gRPC endpoint to execute and monitor end-to-end release pipelines, providing real-time CLI feedback.'
+        - 'Introduced the `hau git retry` CLI command and `GitRetry` gRPC endpoint to natively trigger retries for failed GitLab pipelines and seamlessly resume their full end-to-end release orchestration.'
+        - 'Integrated automated GitLab Merge Request (MR) creation for release operations, bridging feature branches seamlessly into target branches while tracking pipeline status.'
+        - 'Integrated the AI-driven `ChangelogOrchestrator` directly into the `GitRelease` pipeline to automatically generate, commit, and push semantic release notes as a seamless step in the release workflow.'
+        - 'Enhanced the release orchestrator''s pipeline monitoring to actively stream pipeline job states and automatically dump error traces for failed jobs directly to the CLI, resolving silent timeouts.'
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Engineered the release orchestrator with atomic Git operations, automatically invoking `git merge --abort` on conflicts and `git pull --rebase` to seamlessly handle concurrent push race conditions.'
+        - 'Optimized CI/CD pipeline efficiency during releases by appending `[skip ci]` to merge commits, preventing redundant branch pipelines while preserving MR security scans.'
+        - 'Developed a native Docker registry image retagging mechanism via the Docker V2 API, allowing immediate promotion of feature-branch containers to release versions (e.g. `v0.3.0`) without rebuilding.'
+        - 'Implemented robust GitLab API conflict detection, instantly aborting release workflows and returning detailed `405 Method Not Allowed` HTTP errors if MR merge conflicts occur.'
+        - 'Scoped all Git identity configurations (`user.name`, `user.email`) strictly to the local repository cache, preventing accidental global host-level mutations.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Updated the semantic changelog generator LLM prompt and parsing logic to strictly enforce single quotes for string fields (e.g., `version`, `date`), satisfying strict CI `yamllint` requirements.'
+        - 'Implemented a pre-flight safety check in the release command that queries GitLab for active pipelines and aborts the release to prevent inadvertently auto-canceling running feature builds.'
+
+- version: 0.0.4
+  date: "2026-07-23"
+  author: "Martin Kecka"
+  changes:
+    - category: "✨ New Features & Enhancements"
+      items:
+        - "Integrated native LLM capabilities via `vLLMClient` to support semantic AI operations within HAU."
+        - "Implemented the `GenerateChangelog` gRPC RPC endpoint to automatically generate high-quality release notes from Git codebase diffs."
+        - "Added the `hau changelog generate` and `hau changelog backfill` CLI commands to trigger automated semantic changelog extraction and historical backfills for any cloned repository."
+        - "Developed a robust 'Map-Reduce' fallback strategy natively in `ChangelogOrchestrator` to handle massive code changes (e.g. > 20k tokens) by chunking processing per file and merging semantic features."
+        - "Implemented a real-time gRPC streaming endpoint (`GitBackfillChangelog`) to stream map-reduce progress and backfill status directly to the CLI."
+    - category: "🚀 Architecture & Infrastructure"
+      items:
+        - "Implemented automatic git differential resolution (comparing `HEAD^1` to `HEAD`) on the server to flawlessly extract branch merge changes without user input."
+        - "Configured metadata extraction directly from git hooks (author/date) to prevent LLM hallucinations during YAML generation."
+        - "Added intelligent git exclusions (e.g. `package-lock.json`, `yarn.lock`) directly into the production orchestrator to bypass massive token generation for dependency tree changes."
+        - "Added automatic Git repository syncing (`git fetch`, `git checkout`) before backfilling to ensure the backend always operates on the latest branch commits."
+
+- version: 0.0.3
+  date: "2026-07-22"
+  author: "Martin Kecka"
+  changes:
+    - category: "✨ New Features & Enhancements"
+      items:
+        - "Added full logical Kubernetes inventory mapping via `inventory sync` capturing Deployments, Services, Endpoints, Pods, PVCs, ConfigMaps, and Ingresses."
+        - "Added topology inference logic for GPU Morpheus pipelines, categorized strictly as GPU_* resources (e.g., GPU_Deployments, GPU_Services)."
+        - "Added `inventory list` CLI command to display deep hierarchical view of computational resources per tenant."
+
+- version: 0.0.2
+  date: "2026-07-22"
+  author: "Martin Kecka"
+  changes:
+    - category: "✨ New Features & Enhancements"
+      items:
+        - "Implemented `GitSync`, `GitListCache`, `GitPush`, and `GitCheckout` RPC endpoints for local repository caching."
+        - "Added `sync`, `list`, `push`, and `checkout` commands to the `hau git` CLI."
+        - "Added multi-repository group caching logic to `GitlabManager` to support pulling, checking out, and pushing changes for `ai/halo` subgroups."
+        - "Introduced `@handle_rpc` decorator in `hau_service.py` to standardize error handling and logging across gRPC endpoints."
+        - "Updated `GitlabManager.fetch_container_tags` to reliably fetch `created_at` metadata by querying full tag objects."
+        - "Added `fetch_container_tags` to `GitlabManager` for querying GitLab Container Registry component versions."
+        - "Updated database schema in `models.py` to include `TenantResourceInventory` and an expanded `DeploymentAuditLog` aligning with CMU standards."
+
+- version: 0.0.1
+  date: "2026-07-20"
+  author: "Martin Kecka"
+  changes:
+    - category: "🚀 Architecture & Infrastructure"
+      items:
+        - "Bootstrapped HALO Admin Utility (HAU) generic scaffolding based on SERA ecosystem standards."

@@ -24,7 +24,6 @@ class GitlabManager:
             project = gl.projects.get(project_path)
             f = project.files.get(file_path=file_path, ref=branch)
             
-            # GitLab returns base64 encoded content via the API
             return base64.b64decode(f.content).decode('utf-8')
         except Exception as e:
             raise RuntimeError(f"Failed to fetch {file_path} via API: {e}")
@@ -38,7 +37,6 @@ class GitlabManager:
             gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
             project = gl.projects.get(project_path)
             tree = project.repository_tree(path=path, ref='main', recursive=True, get_all=True)
-            # Return JSON string representing the file tree
             tree_data = [item.attributes if hasattr(item, 'attributes') else item for item in tree]
             return json.dumps(tree_data)
         except Exception as e:
@@ -48,16 +46,13 @@ class GitlabManager:
         """Syncs the local repository by cloning or pulling."""
         token = self.token
         
-        # Format the oauth2 url for cloning
         domain = self.url.replace('https://', '').replace('http://', '')
         repo_url = f"https://oauth2:{token}@{domain}/{project_path}.git"
 
-        # Ensure parent directory exists
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
         if not os.path.exists(os.path.join(local_path, '.git')):
             logger.info(f"Cloning {project_path} into {local_path} (shallow)...")
-            # Capture output so it is returned to the gRPC client instead of nakedly printed to the systemd journal
             result = subprocess.run(['git', 'clone', '--depth', '1', repo_url, local_path], capture_output=True, text=True)
             if result.returncode != 0:
                 raise RuntimeError(f"Git clone failed with exit code {result.returncode}\n{result.stderr}")
@@ -65,7 +60,6 @@ class GitlabManager:
             return f"Successfully cloned {project_path} to {local_path}.\n{output}"
         else:
             logger.info(f"Pulling latest changes for {project_path} in {local_path} (shallow)...")
-            # Always update the remote url to ensure the latest token is used in case it was rotated
             subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=local_path)
             
             result = subprocess.run(['git', 'pull', '--depth', '1', 'origin', 'main'], cwd=local_path, capture_output=True, text=True)
@@ -81,33 +75,27 @@ class GitlabManager:
         if not os.path.exists(os.path.join(local_path, '.git')):
             raise RuntimeError(f"No git repository found at {local_path}. Run sync first.")
             
-        # git add .
         add_res = subprocess.run(['git', 'add', '.'], cwd=local_path, capture_output=True, text=True)
         if add_res.returncode != 0:
             raise RuntimeError(f"Git add failed: {add_res.stderr}")
             
-        # check if there's anything to commit
         status_res = subprocess.run(['git', 'status', '--porcelain'], cwd=local_path, capture_output=True, text=True)
         if not status_res.stdout.strip():
             return "No changes to commit."
 
-        # Configure git author dynamically from settings or default
         author_name = self.config.get('author_name', 'HAU Auto Sync')
         author_email = self.config.get('author_email', 'sera-ai@gtt.net')
         subprocess.run(['git', 'config', 'user.name', author_name], cwd=local_path)
         subprocess.run(['git', 'config', 'user.email', author_email], cwd=local_path)
 
-        # git commit -m "..."
         commit_res = subprocess.run(['git', 'commit', '-m', commit_msg], cwd=local_path, capture_output=True, text=True)
         if commit_res.returncode != 0:
             raise RuntimeError(f"Git commit failed: {commit_res.stderr}")
             
-        # Update remote to ensure token is valid
         domain = self.url.replace('https://', '').replace('http://', '')
         repo_url = f"https://oauth2:{token}@{domain}/{project_path}.git"
         subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=local_path)
             
-        # git push origin main
         logger.info(f"Pushing changes to origin {branch}... (this may take a while)")
         push_res = subprocess.run(['git', 'push', 'origin', branch], cwd=local_path, capture_output=True, text=True)
         if push_res.returncode != 0:
@@ -125,7 +113,6 @@ class GitlabManager:
             
             all_tags = []
             
-            # Try to get it as a group first
             try:
                 group = gl.groups.get(path)
                 projects = group.projects.list(include_subgroups=True, all=True)
@@ -137,7 +124,6 @@ class GitlabManager:
                     try:
                         project = gl.projects.get(p.id)
                         
-                        # Pre-fetch active branches and git tags
                         try:
                             active_branches = {b.name: b.commit['author_name'] for b in project.branches.list(get_all=True)}
                         except Exception:
@@ -160,7 +146,6 @@ class GitlabManager:
                                     
                                 author = active_branches.get(t.name) or active_git_tags.get(t.name) or 'Unknown'
                                     
-                                # Create a distinguished path name for group aggregates
                                 distinguished_path = f"{project.path_with_namespace}/{r.name}" if r.name else project.path_with_namespace
                                 all_tags.append({
                                     "name": t.name,
@@ -173,7 +158,6 @@ class GitlabManager:
                     except Exception as e:
                         logger.error(f"Skipping or failed to fetch tags for project {p.id}: {e}")
             else:
-                # Fallback to single project
                 project = gl.projects.get(path)
                 
                 try:
@@ -214,6 +198,7 @@ class GitlabManager:
             raise RuntimeError(f"Failed to fetch container tags via API: {e}")
             
         return json.dumps(all_tags)
+
     def sync_group_cache(self, default_branch='dev'):
         """Syncs all repositories in the group to the local cache path."""
         token = self.config['bot_token']
@@ -240,7 +225,6 @@ class GitlabManager:
             repo_local_path = os.path.join(local_path, rel_path)
             
             if not os.path.exists(os.path.join(repo_local_path, '.git')):
-                # Check if default_branch ('dev') exists remotely without using GitLab API
                 ls_remote = subprocess.run(['git', 'ls-remote', '--heads', repo_url, default_branch], capture_output=True, text=True)
                 if ls_remote.stdout.strip():
                     target_branch = default_branch
@@ -255,7 +239,6 @@ class GitlabManager:
                 else:
                     return f"✅ Cloned {p.path_with_namespace} (branch: {target_branch})"
             else:
-                # Update remote URL
                 subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=repo_local_path)
                 
                 curr_res = subprocess.run(['git', 'branch', '--show-current'], cwd=repo_local_path, capture_output=True, text=True)
@@ -300,10 +283,9 @@ class GitlabManager:
         output = []
         for root, dirs, files in os.walk(local_path):
             if '.git' in dirs:
-                dirs.remove('.git') # don't recurse into .git
+                dirs.remove('.git')
                 repo_dir = root
                 
-                # Reconstruct the project path from the folder path
                 rel_dir = os.path.relpath(repo_dir, local_path)
                 full_project_path = f"{project_path}/{rel_dir}" if rel_dir != "." else project_path
                 
@@ -318,7 +300,6 @@ class GitlabManager:
                 branch_res = subprocess.run(['git', 'branch', '-r'], cwd=repo_dir, capture_output=True, text=True)
                 branches = [b.strip().replace('origin/', '') for b in branch_res.stdout.split('\n') if b.strip() and '->' not in b]
                 branches = sorted(list(set(branches)))
-                
                 
                 default_branch = projects[full_project_path].default_branch if full_project_path in projects else 'main'
                 
@@ -349,6 +330,8 @@ class GitlabManager:
             raise RuntimeError(f"Project '{project_name}' is not cloned locally. Run sync first.")
             
         subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, capture_output=True)
+        subprocess.run(['git', 'reset', '--hard', 'HEAD'], cwd=repo_dir, capture_output=True)
+        subprocess.run(['git', 'clean', '-fd'], cwd=repo_dir, capture_output=True)
         result = subprocess.run(['git', 'checkout', branch_name], cwd=repo_dir, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"Failed to checkout branch '{branch_name}' for '{project_name}': {result.stderr}")
@@ -414,39 +397,38 @@ class GitlabManager:
         }
         
         try:
-            # Try to update existing
             project.commits.create(data)
         except gitlab.exceptions.GitlabCreateError as e:
             if "A file with this name doesn't exist" in str(e):
-                # Create instead
                 data['actions'][0]['action'] = 'create'
                 project.commits.create(data)
             else:
                 raise e
         return f"Successfully committed {file_path} to {branch} via API."
 
-    def create_and_merge_mr(self, project_path, source_branch, target_branch, commit_message, keep_branch=False):
+    def create_and_merge_mr(self, project_path, source_branch, target_branch, commit_message, keep_branch=False, assignee_id=None):
         """Creates an MR and attempts to merge it."""
         try:
             import gitlab
             gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
             project = gl.projects.get(project_path)
             
-            # Check for existing MR
             mrs = project.mergerequests.list(source_branch=source_branch, target_branch=target_branch, state='opened')
             if mrs:
                 mr = mrs[0]
             else:
-                mr = project.mergerequests.create({
+                mr_payload = {
                     'source_branch': source_branch,
                     'target_branch': target_branch,
                     'title': f"HAU Auto-Release: {source_branch} -> {target_branch}",
                     'description': commit_message
-                })
+                }
+                if assignee_id:
+                    mr_payload['assignee_ids'] = [assignee_id]
+                mr = project.mergerequests.create(mr_payload)
             
             import time
             
-            # Wait for MR to finish checking mergeability and spawn pipeline
             active_pipeline = False
             for _ in range(20):
                 mr = project.mergerequests.get(mr.iid)
@@ -473,7 +455,6 @@ class GitlabManager:
                 else:
                     mr.merge(merge_commit_message=merge_msg, should_remove_source_branch=remove_source, merge_when_pipeline_succeeds=True)
             except gitlab.exceptions.GitlabError as e:
-                # If we get a 405, it could mean the pipeline was skipped or it has conflicts.
                 mr = project.mergerequests.get(mr.iid)
                 status = mr.detailed_merge_status
                 if status == "conflict":
@@ -525,8 +506,9 @@ class GitlabManager:
         job_states = {}
         job_trace_offsets = {}
         job_start_times = {}
+        telemetry = {"jobs": [], "footprint_mb": None}
         
-        while pipeline.status in ['running', 'pending', 'created']:
+        while pipeline.status in ['running', 'pending', 'created', 'waiting_for_resource', 'preparing']:
             jobs = pipeline.jobs.list(all=True)
             active_jobs = 0
             for job in jobs:
@@ -610,7 +592,6 @@ class GitlabManager:
                     except Exception as e:
                         yield f"      (Could not fetch trace: {e})"
             
-            # Fetch container footprint size
             try:
                 repos = project.repositories.list()
                 if repos:
@@ -642,15 +623,35 @@ class GitlabManager:
                         total_size_bytes = target_tag.attributes.get('total_size', 0)
                         if total_size_bytes:
                             size_mb = total_size_bytes / (1024 * 1024)
+                            telemetry["footprint_mb"] = round(size_mb, 2)
                             yield f"  📦 Container '{target_tag.name}' footprint: {size_mb:.2f} MB"
             except Exception as e:
                 yield f"  (Could not fetch container size: {e})"
                 
-            yield {"pipeline_success": True}
+            for job in jobs:
+                telemetry["jobs"].append({
+                    "id": job.id,
+                    "name": job.name,
+                    "stage": job.stage,
+                    "status": job.status,
+                    "duration": job.duration,
+                    "web_url": job.web_url
+                })
+                
+            yield {"pipeline_success": True, "telemetry": telemetry}
         else:
             yield f"Pipeline #{pipeline.id} failed with status: {pipeline.status.upper()} ❌"
             jobs = pipeline.jobs.list(all=True)
             for job in jobs:
+                job_data = {
+                    "id": job.id,
+                    "name": job.name,
+                    "stage": job.stage,
+                    "status": job.status,
+                    "duration": job.duration,
+                    "web_url": job.web_url,
+                    "trace": None
+                }
                 if job.status == 'failed':
                     yield f"  - Failed Job: {job.name} (Stage: {job.stage}) (Web: {job.web_url})"
                     try:
@@ -659,14 +660,18 @@ class GitlabManager:
                         if trace_bytes:
                             trace_str = trace_bytes.decode('utf-8', errors='replace')
                             lines = trace_str.split('\n')
-                            yield f"    --- Last 50 lines of trace for {job.name} ---"
-                            for line in lines[-50:]:
-                                if line.strip():
-                                    yield f"      {line.strip()}"
+                            trace_lines = [line.strip() for line in lines[-100:] if line.strip()]
+                            job_data["trace"] = trace_lines
+                            
+                            yield f"    --- Last {len(trace_lines)} lines of trace for {job.name} ---"
+                            for line in trace_lines[-50:]:
+                                yield f"      {line}"
                             yield f"    ----------------------------------------"
                     except Exception as e:
                         yield f"      (Could not fetch trace: {e})"
-            yield {"pipeline_success": False, "pipeline_id": pipeline.id}
+                telemetry["jobs"].append(job_data)
+                
+            yield {"pipeline_success": False, "pipeline_id": pipeline.id, "telemetry": telemetry}
 
     def create_tag(self, project_path, tag_name, ref):
         """Creates a Git tag via the API."""
@@ -682,13 +687,12 @@ class GitlabManager:
     def retag_container(self, project_path, old_tag, new_tag):
         """Retags a container image in the GitLab Container Registry using the Docker V2 API."""
         import requests
+        import time
         
-        # 1. Get JWT Token for registry authentication
         auth_url = f"{self.url.rstrip('/')}/jwt/auth"
         service = "container_registry"
         scope = f"repository:{project_path}:pull,push"
         
-        # Authenticate with PAT
         token_res = requests.get(
             auth_url,
             params={"service": service, "scope": scope},
@@ -700,7 +704,6 @@ class GitlabManager:
             
         token = token_res.json().get("token")
         
-        # 2. Get Manifest of the old tag
         from urllib.parse import urlparse
         parsed_url = urlparse(self.url)
         registry_url = f"https://{parsed_url.netloc}:4567"
@@ -711,14 +714,18 @@ class GitlabManager:
         }
         
         manifest_url = f"{registry_url}/v2/{project_path.lower()}/manifests/{old_tag}"
-        res = requests.get(manifest_url, headers=headers, verify=False)
-        if res.status_code != 200:
-            return False, f"Failed to get manifest for {old_tag}: {res.status_code} - {res.text}"
+        res = None
+        for attempt in range(12):
+            res = requests.get(manifest_url, headers=headers, verify=False)
+            if res.status_code == 200:
+                break
+            time.sleep(5)
+        else:
+            return False, f"Failed to get manifest for {old_tag}: {res.status_code if res else 'Unknown'} - {res.text if res else 'Timeout'}"
             
         manifest = res.text
         content_type = res.headers.get("Content-Type")
         
-        # 3. Put Manifest to the new tag
         put_headers = headers.copy()
         put_headers["Content-Type"] = content_type
         
@@ -729,3 +736,47 @@ class GitlabManager:
             return True, f"Successfully retagged container image '{old_tag}' to '{new_tag}'"
         else:
             return False, f"Failed to push new tag {new_tag}: {put_res.status_code} - {put_res.text}"
+
+    def resolve_user(self, project_path, search_str):
+        """Resolves a user from the project's members based on search string, returns dict with formatted name."""
+        token = self.token
+        try:
+            import urllib.parse
+            gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
+            project = gl.projects.get(project_path)
+            
+            members = project.members_all.list(all=True)
+            search_lower = search_str.lower()
+            matched_member = None
+            
+            for m in members:
+                username = getattr(m, 'username', '').lower()
+                name = getattr(m, 'name', '').lower()
+                if search_lower in username or search_lower in name:
+                    matched_member = m
+                    break
+                    
+            if not matched_member:
+                users = gl.users.list(search=search_str)
+                if users:
+                    matched_member = users[0]
+                    
+            if matched_member:
+                raw_name = matched_member.name
+                if '@' in raw_name:
+                    parts = raw_name.split('@')[0].split('.')
+                    formatted_name = ' '.join(p.capitalize() for p in parts)
+                else:
+                    formatted_name = raw_name
+                    
+                fallback_email = f"{formatted_name.lower().replace(' ', '.')}@gtt.net"
+                return {
+                    'id': matched_member.id,
+                    'name': formatted_name,
+                    'username': matched_member.username,
+                    'email': getattr(matched_member, 'email', fallback_email)
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Failed to resolve user '{search_str}' in {project_path}: {e}")
+            return None

@@ -254,9 +254,10 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             
         orchestrator = ChangelogOrchestrator(config=self.config)
         start_version = request.start_version if request.start_version else "0.1.0"
+        start_commit = request.start_commit if request.start_commit else None
         
         try:
-            for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version):
+            for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version, start_commit):
                 if isinstance(item, dict) and "final_yaml" in item:
                     yield hau_pb2.GitBackfillResponse(
                         success=True,
@@ -291,7 +292,8 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 target_branch=request.target_branch,
                 skip_changelog=request.skip_changelog_generation,
                 keep_branch=request.keep_branch,
-                debug=request.debug
+                debug=request.debug,
+                author=request.author
             )
             for item in generator:
                 if isinstance(item, dict):
@@ -328,3 +330,47 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         except Exception as e:
             logger.error(f"[GitRetry] Orchestrator failed: {e}")
             yield hau_pb2.GitRetryResponse(success=False, message=f"Retry failed: {e}")
+
+    @handle_rpc(hau_pb2.GitAuditResponse)
+    def GitAudit(self, request, context):
+        from core.database.models import GitReleaseAuditLog
+        try:
+            with self._get_db_session(write=False) as session:
+                if not session:
+                    return hau_pb2.GitAuditResponse(success=False, message="Database not configured")
+                    
+                query = session.query(GitReleaseAuditLog)
+                
+                if request.id:
+                    query = query.filter(GitReleaseAuditLog.id.startswith(request.id))
+                elif request.project_name:
+                    query = query.filter(GitReleaseAuditLog.project_name == request.project_name)
+                    
+                records = query.order_by(GitReleaseAuditLog.timestamp.desc()).limit(50).all()
+                
+                result = []
+                for rec in records:
+                    result.append({
+                        "id": rec.id,
+                        "timestamp": rec.timestamp.isoformat() if rec.timestamp else None,
+                        "project_name": rec.project_name,
+                        "source_branch": getattr(rec, 'source_branch', 'N/A'),
+                        "target_branch": getattr(rec, 'target_branch', 'N/A'),
+                        "version_tag": rec.version_tag,
+                        "action": rec.action,
+                        "actor": rec.actor,
+                        "status": rec.status,
+                        "error_message": getattr(rec, 'error_message', None),
+                        "changelog_generation_method": rec.changelog_generation_method,
+                        "merged_features_json": rec.merged_features_json,
+                        "job_details_json": rec.job_details_json
+                    })
+                    
+                return hau_pb2.GitAuditResponse(
+                    success=True, 
+                    message=f"Found {len(result)} audit logs", 
+                    result_json=json.dumps(result)
+                )
+        except Exception as e:
+            logger.error(f"[GitAudit] Failed to fetch audit logs: {e}")
+            return hau_pb2.GitAuditResponse(success=False, message=str(e))

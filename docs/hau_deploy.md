@@ -9,18 +9,26 @@ The repository operates on a GitOps-based workflow, serving both as the source c
 ```text
 /halo-repository
 ├── backend/              # Pure source code for the FastAPI backend API
+│   └── docs/             # CHANGELOG.yaml
 ├── dashboard/            # Pure source code for the React/Vite frontend UI
+│   ├── docs-site/docs/   # CHANGELOG.yaml
+│   └── frontend/docs/    # CHANGELOG.yaml
 ├── ingest/               # Pure source code for ingestion services
 │   ├── netflow-goflow2/  
 │   └── syslog-fluent-bit/
 ├── pipelines/            # Pure source code for Morpheus/Triton AI pipelines
 │   ├── netflow-dfp/      
+│   │   └── docs/         # CHANGELOG.yaml
 │   ├── syslog-dfp/       
 │   └── syslog-dfp-llm/   
 ├── training/             # Pure source code for AI inference & training scripts
 │   └── halo-inference/   
 │
-└── deploy/               # The GitOps Control Directory
+└── deployment/           # The GitOps Control Directory & Architecture Documentation
+    ├── docs/             # Centralized Design & Concept Documentation
+    │   ├── ecosystem/    # Global ecosystem concept docs (e.g. halo_ecosystem.md)
+    │   └── netflow-dfp/  # Component architecture docs (e.g. ndfp_design.md)
+    │
     ├── infrastructure/   # Global/Regional shared infrastructure components
     │   ├── netapp/       # NetApp Trident configurations (ukslo-naclu01, usnyh-naclu01)
     │   ├── kafka/        # Strimzi Kafka cluster definitions

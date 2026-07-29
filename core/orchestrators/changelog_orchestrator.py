@@ -67,7 +67,7 @@ class ChangelogOrchestrator:
         if content.endswith("```"): content = content[:-3]
         return content.strip()
         
-    def generate_for_commits(self, repo_local_path: str, start_commit: str, end_commit: str, author: str, date_str: str, version: str):
+    def generate_for_commits(self, repo_local_path: str, start_commit: str, end_commit: str, author: str, date_str: str, version: str, commits_list: list = None):
         """
         Orchestrates the changelog generation for a specific commit range.
         If the diff is too large, it automatically falls back to a Map-Reduce extraction approach.
@@ -99,15 +99,17 @@ class ChangelogOrchestrator:
                 yield f"Payload too large (~{token_estimate} tokens). Falling back to Map-Reduce..."
                 all_extracted_features = []
                 
-                commits_res = subprocess.run(
-                    ['git', 'log', f"{start_commit}..{end_commit}", '--format=%H'],
-                    cwd=repo_local_path, capture_output=True, text=True
-                )
-                commit_hashes = [c for c in commits_res.stdout.strip().split('\n') if c]
-                if not commit_hashes:
-                    commit_hashes = [end_commit]
-                
-                commit_hashes.reverse()
+                if commits_list:
+                    commit_hashes = commits_list.copy()
+                else:
+                    commits_res = subprocess.run(
+                        ['git', 'log', f"{start_commit}..{end_commit}", '--format=%H'],
+                        cwd=repo_local_path, capture_output=True, text=True
+                    )
+                    commit_hashes = [c for c in commits_res.stdout.strip().split('\n') if c]
+                    if not commit_hashes:
+                        commit_hashes = [end_commit]
+                    commit_hashes.reverse()
                 
                 for i, commit_hash in enumerate(commit_hashes):
                     logger.info(f"  Processing commit {i+1}/{len(commit_hashes)}: {commit_hash[:7]}...")
@@ -174,7 +176,7 @@ class ChangelogOrchestrator:
             logger.error(f"Failed to generate changelog: {e}")
             raise e
 
-    def run_backfill(self, repo_local_path: str, branch: str, start_version: str = "0.1.0"):
+    def run_backfill(self, repo_local_path: str, branch: str, start_version: str = "0.1.0", start_commit: str = None):
         yield f"Analyzing git history for on branch '{branch}'..."
         
         result = subprocess.run(
@@ -226,13 +228,25 @@ class ChangelogOrchestrator:
             return f"{major}.{minor}.{patch}"
         
         current_version = start_version
-        prev_end_commit = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
         changelog_entries = []
         
         for i, date_str in enumerate(ordered_days):
             day_info = days[date_str]
+            first_commit_of_day = day_info['commits'][0]
             latest_commit = day_info['commits'][-1]
             author = day_info['author']
+            
+            if i == 0 and start_commit:
+                prev_end_commit = start_commit
+            else:
+                parent_res = subprocess.run(
+                    ['git', 'rev-parse', f'{first_commit_of_day}^1'],
+                    cwd=repo_local_path, capture_output=True, text=True
+                )
+                if parent_res.returncode == 0 and parent_res.stdout.strip():
+                    prev_end_commit = parent_res.stdout.strip()
+                else:
+                    prev_end_commit = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
             
             yield f"\nProcessing Day {i+1}/{len(ordered_days)}: {date_str} (Version {current_version})"
             
@@ -244,7 +258,8 @@ class ChangelogOrchestrator:
                     end_commit=latest_commit,
                     author=author,
                     date_str=date_str,
-                    version=current_version
+                    version=current_version,
+                    commits_list=day_info['commits']
                 ):
                     if isinstance(update, dict) and "final_yaml" in update:
                         final_yaml = update["final_yaml"]
@@ -270,7 +285,7 @@ class ChangelogOrchestrator:
 
         changelog_entries.reverse()
         final_doc = "# ---------------------------------------------------------------------------\n"
-        final_doc += "# BACKFILLED CHANGELOG\n"
+        final_doc += "# HALO STANDARD CHANGELOG\n"
         final_doc += "#\n"
         final_doc += "# STANDARD CATEGORIES:\n"
         final_doc += "# - \"🚀 Architecture & Infrastructure\"\n"

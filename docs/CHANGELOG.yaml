@@ -15,16 +15,36 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: '0.0.7'
+  date: '2026-07-29'
+  author: 'Martin Kecka'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Added `--start-commit` optional flag to `hau changelog backfill` (and integrated into `GitBackfillRequest` protobuf) to manually override the starting commit boundary during changelog backfills.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Fixed an issue in `changelog_orchestrator.py` where backfilling a repository with merged histories (like a monorepo initialization) would incorrectly process the entire historical commit tree instead of isolating the specific day''s commits.'
+
 - version: '0.0.6'
   date: '2026-07-28'
   author: 'Martin Kecka'
   changes:
     - category: '✨ New Features & Enhancements'
       items:
+        - 'Added the `--author` flag to `hau git release` which dynamically maps an input string to the exact GitLab user''s real name (parsing email addresses if necessary) to properly attribute generated changelogs.'
+        - 'Implemented the `GitReleaseAuditLog` Postgres database architecture to natively track, lock, and archive the full lifecycle of every `hau git release` and `hau git retry` sequence.'
+        - 'Added the `hau git audit` CLI command and corresponding gRPC endpoint to interrogate the release orchestrator''s Postgres database and extract formatted, highly detailed YAML telemetry for any release.'
         - 'Added CLI telemetry to `hau git release` and `hau git retry` to output precise job execution times (pulled natively from the GitLab API) and the final container registry footprint size.'
         - 'Updated the `hau git retry` CLI command and endpoint to natively accept `--merge` arguments, automatically finding and retrying the latest pipeline attached to a given Merge Request.'
         - 'Enhanced release error handling to explicitly output the exact `python3 halo_admin_utility.py git retry --merge <id>` CLI command required to resume the release process if a merge or pipeline fails.'
         - 'Added `--skip-warnings` option to `hau git retry` to allow seamlessly bypassing pipeline retries for jobs that are allowed to fail.'
+        - 'Added `source_branch`, `target_branch`, and `error_message` fields to the `GitReleaseAuditLog` database model and `git audit` CLI outputs to deeply track release provenance and failure reasons.'
+        - 'Implemented release idempotency checks in `ReleaseOrchestrator` using GitLab''s `repository_compare` API to immediately abort releases if zero new commits exist between branches.'
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Replaced static sleep delays during container retagging with an active, deterministic Docker V2 API polling loop to ensure manifests are fully registered before executing tag PUT requests.'
+        - 'Implemented strict Git cache sanitization (git reset --hard HEAD and git clean -fd) prior to branch checkouts to guarantee idempotent release operations and prevent dirty-cache pipeline lockups.'
     - category: '🐛 Bug Fixes & Resilience'
       items:
         - 'Fixed a race condition causing double pipeline triggers during release by properly injecting `-o ci.skip` when the orchestrator pushes the auto-generated changelog.'
@@ -33,6 +53,9 @@
         - 'Injected `[skip ci]` into the merge commit message during manual `git retry` flows to prevent GitLab from spawning duplicate rogue pipelines on the target branch.'
         - 'Fixed a strict orchestration polling bug where MR monitoring would prematurely abort if it intercepted the MR during a temporary `locked` transition state.'
         - 'Corrected misleading pipeline logging where active pipelines finalizing their status were falsely labeled as "Waiting for jobs to start...".'
+        - 'Enhanced the `ReleaseOrchestrator` to automatically catch unhandled orchestration exceptions and pipeline failures, persisting the exact error strings into the database lock for CLI troubleshooting.'
+        - 'Added a database query pre-check to `hau git release` to warn the operator if the exact source and target branch combination was already successfully released.'
+        - 'Fixed a syntax error caused by an unterminated f-string literal in the `git retry` orchestration stream.'
 
 - version: '0.0.5'
   date: '2026-07-27'

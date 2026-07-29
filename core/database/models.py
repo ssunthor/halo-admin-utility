@@ -30,7 +30,7 @@ class HaloTenant(Base):
     __tablename__ = 'halo_tenant'
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    cmd_tenant_id = Column(String(255), nullable=True) # Link to CMD
+    cmd_tenant_id = Column(String(255), nullable=True)
     slug_name = Column(String(255), nullable=False, unique=True)
     target_cluster = Column(String(50), nullable=False)
     halo_version = Column(String(50), nullable=True)
@@ -70,18 +70,14 @@ class CollectorInventory(Base):
     tenant = relationship("HaloTenant", back_populates="collectors")
 
 class TenantResourceInventory(Base):
-    """
-    Similar to CMU's AiModelInventory, tracks specific deployed assets for the tenant.
-    e.g., Ingress (Cloudflare DNS), Keycloak Realms, specific Pipelines.
-    """
     __tablename__ = 'tenant_resource_inventory'
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
     tenant_id = Column(String(36), ForeignKey('halo_tenant.id'), nullable=False)
-    resource_type = Column(String(50), nullable=False) # e.g., 'INGRESS', 'KEYCLOAK_REALM', 'PIPELINE'
-    resource_name = Column(String(255), nullable=False) # e.g., 'corp.defensehalo.ai'
+    resource_type = Column(String(50), nullable=False)
+    resource_name = Column(String(255), nullable=False)
     status = Column(String(50), default='PROVISIONED')
-    metadata_json = Column(JSON, nullable=True) # Additional config tracking
+    metadata_json = Column(JSON, nullable=True)
 
     tenant = relationship("HaloTenant", back_populates="resources")
 
@@ -90,15 +86,30 @@ class DeploymentAuditLog(Base):
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
     tenant_id = Column(String(36), ForeignKey('halo_tenant.id'), nullable=False)
-    actor = Column(String(255), nullable=False) # Aligned with CMU
-    action = Column(String(255), nullable=False) # e.g., DEPLOY_TENANT, UPDATE_INGRESS
-    domain = Column(String(255), nullable=False) # e.g., Ingress, Pipeline, Core
+    actor = Column(String(255), nullable=False)
+    action = Column(String(255), nullable=False)
+    domain = Column(String(255), nullable=False)
     target_cluster = Column(String(255), nullable=True)
-    payload_reference = Column(String(255), nullable=True) # Git commit, YAML path, etc.
+    payload_reference = Column(String(255), nullable=True)
     gitlab_pipeline_id = Column(String(255), nullable=True)
     status = Column(SQLEnum(DeploymentStatus), default=DeploymentStatus.TRIGGERED)
     timestamp = Column(DateTime, default=datetime.utcnow)
-
     tenant = relationship("HaloTenant", back_populates="deployment_logs")
 
-
+class GitReleaseAuditLog(Base):
+    __tablename__ = 'git_release_audit_log'
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_name = Column(String(255), nullable=False)
+    source_branch = Column(String(255), nullable=True)
+    target_branch = Column(String(255), nullable=True)
+    version_tag = Column(String(50), nullable=True)
+    action = Column(String(50), nullable=False)
+    actor = Column(String(255), nullable=False, default="gia-ai")
+    status = Column(String(50), nullable=False, default="RUNNING")
+    error_message = Column(String, nullable=True)
+    changelog_generation_method = Column(String(50), nullable=True)
+    merged_features_json = Column(JSON, nullable=True)
+    job_details_json = Column(JSON, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

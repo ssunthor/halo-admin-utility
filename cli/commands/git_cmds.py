@@ -33,7 +33,6 @@ def git_containers(ctx, as_grpc):
             click.echo("No tags found.")
             return
             
-        # Group tags by project
         grouped_tags = {}
         for tag in tags:
             project = tag.get('project', 'unknown')
@@ -50,7 +49,6 @@ def git_containers(ctx, as_grpc):
                 author = t.get('author', 'Unknown')
                 
                 status_flag = ""
-                # Define stable standard tags that usually don't have associated temporary branches
                 stable_tags = ['main', 'latest', 'demo', 'dev', 'stable', 'master']
                 
                 if not t.get('branch_exists') and tag_name not in stable_tags:
@@ -173,8 +171,9 @@ def git_checkout(ctx, project, branch, as_grpc):
 @click.option('--skip-changelog', is_flag=True, help="Skip generating changelog if missing")
 @click.option('--delete-branch', is_flag=True, help="Delete the feature branch after merging (default is to keep it)")
 @click.option('--debug', is_flag=True, help="Stream detailed job trace logs from the pipeline")
+@click.option('--author', type=str, help="Override author (will resolve to GitLab user)")
 @click.pass_context
-def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug):
+def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug, author):
     """Executes a GitOps merge and release (with pipeline monitoring and tagging)."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
@@ -185,7 +184,8 @@ def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug)
         target_branch=target,
         skip_changelog_generation=skip_changelog,
         keep_branch=not delete_branch,
-        debug=debug
+        debug=debug,
+        author=author or ""
     )
     
     click.echo(f"Initiating release pipeline for {repo} ({source} -> {target})...")
@@ -253,3 +253,84 @@ def git_retry(ctx, repo, pipeline, merge, skip_warnings, debug):
                     click.echo(response.message)
     except Exception as e:
         click.secho(f"RPC Error: {e}", fg="red")
+
+@git_cli.command(name="audit")
+@click.option('--id', type=str, help="ID of the specific audit log to view details")
+@click.option('--repo', type=str, help="Filter by project name")
+@click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
+@handle_grpc_errors
+@click.pass_context
+def git_audit(ctx, id, repo, as_grpc):
+    """View Git Release orchestration audit logs and telemetry data."""
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    
+    req = hau_pb2.GitAuditRequest(
+        id=id or "",
+        project_name=repo or ""
+    )
+    
+    resp = stub.GitAudit(req)
+    
+    if as_grpc:
+        print_grpc_json(resp)
+        return
+        
+    if not resp.success:
+        click.secho(f"❌ {resp.message}", fg="red")
+        return
+        
+    try:
+        records = json.loads(resp.result_json)
+        if not records:
+            click.echo("No audit records found.")
+            return
+            
+        if id:
+            click.secho(f"--- GitReleaseAuditLog ID: {id} ---", fg='cyan', bold=True)
+            for rec in records:
+                click.echo(f"Timestamp:   {rec.get('timestamp')}")
+                click.echo(f"Project:     {rec.get('project_name')}")
+                click.echo(f"Source:      {rec.get('source_branch', 'N/A')}")
+                click.echo(f"Target:      {rec.get('target_branch', 'N/A')}")
+                click.echo(f"Version:     {rec.get('version_tag')}")
+                click.echo(f"Action:      {rec.get('action')}")
+                status_color = 'green' if rec.get('status') == 'SUCCESS' else 'red' if rec.get('status') == 'FAILED' else 'yellow'
+                click.echo(f"Status:      {click.style(rec.get('status'), fg=status_color, bold=True)}")
+                
+                if rec.get('error_message'):
+                    click.echo(f"Error:       {click.style(rec.get('error_message'), fg='red')}")
+                
+                click.echo(f"Method:      {rec.get('changelog_generation_method')}")
+                
+                features = rec.get('merged_features_json') or {}
+                if features.get('raw_yaml'):
+                    click.secho(f"\n[Generated Changelog]:", fg='magenta', bold=True)
+                    click.echo(features.get('raw_yaml').strip())
+                    
+                jobs_details = rec.get('job_details_json') or {}
+                if jobs_details.get('footprint_mb'):
+                    click.secho(f"\n📦 Container Footprint: {jobs_details.get('footprint_mb')} MB", bold=True)
+                    
+                jobs = jobs_details.get('jobs', [])
+                if jobs:
+                    click.secho(f"\n[Pipeline Jobs]:", fg='magenta', bold=True)
+                    for j in jobs:
+                        j_status = j.get('status', 'unknown')
+                        jc = 'green' if j_status == 'success' else 'red' if j_status == 'failed' else 'yellow'
+                        dur = f"{j.get('duration', 0):.1f}s" if j.get('duration') else "N/A"
+                        click.echo(f"  - {j.get('name'):<25} | {click.style(f'{j_status:<10}', fg=jc)} | {dur:<8} | {j.get('stage')}")
+                        if j.get('trace'):
+                            click.secho(f"    --- Last 15 lines of Trace ---", fg='red')
+                            for tline in j.get('trace', [])[-15:]:
+                                click.secho(f"      {tline}", fg='red', dim=True)
+        else:
+            click.secho(f"{'ID':<8} | {'Project':<38} | {'Version':<12} | {'Action':<13} | {'Status':<10} | {'Method':<20} | {'Date'}", fg='cyan', bold=True)
+            click.secho("-" * 135, fg='cyan')
+            for rec in records:
+                status_color = 'green' if rec['status'] == 'SUCCESS' else 'red' if rec['status'] == 'FAILED' else 'yellow'
+                status_str = click.style(f"{rec['status']:<10}", fg=status_color)
+                short_id = str(rec['id'])[:8]
+                click.echo(f"{short_id:<8} | {rec['project_name']:<38} | {str(rec['version_tag'] or 'N/A'):<12} | {rec['action']:<13} | {status_str} | {str(rec['changelog_generation_method'] or 'N/A'):<20} | {rec['timestamp']}")
+    except Exception as e:
+        click.secho(f"Failed to parse audit logs: {e}", fg="red")

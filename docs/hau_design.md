@@ -56,7 +56,7 @@ HAU will manage state for provisioning and inventory that complements CMD.
 ### 4.3. Configuration & Feature Management (CMU/AMU Patterns)
 HAU acts as the central orchestration "brain" that governs deployment state and configuration. HAU generates standard Kubernetes manifests and commits them to a dedicated control directory within the `halo-repository`. This incorporates a Geolocation Routing Layer to manage isolated customer tenants across global sites:
 
-The complete folder structure and operational patterns for the repository are detailed in [hau_deploy.md](hau_deploy.md).
+The complete folder structure and operational patterns for the repository are detailed within the Halo repository's concept documentation (`deployment/docs/ecosystem/repo_concept.md`).
 
 
 **Deployment Flow (GitLab CI pipeline trigger):**

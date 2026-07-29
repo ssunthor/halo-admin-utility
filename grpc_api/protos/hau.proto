@@ -14,6 +14,7 @@ service HauService {
   rpc GitBackfillChangelog(GitBackfillRequest) returns (stream GitBackfillResponse);
   rpc GitRelease(GitReleaseRequest) returns (stream GitReleaseResponse);
   rpc GitRetry(GitRetryRequest) returns (stream GitRetryResponse);
+  rpc GitAudit(GitAuditRequest) returns (GitAuditResponse);
 }
 
 message InventorySyncRequest {}
@@ -92,6 +93,7 @@ message GitBackfillRequest {
   string project_name = 1;
   string branch_name = 2;
   string start_version = 3;
+  string start_commit = 4;
 }
 
 message GitBackfillResponse {
@@ -107,6 +109,7 @@ message GitReleaseRequest {
   bool skip_changelog_generation = 4;
   bool debug = 5;
   bool keep_branch = 6;
+  string author = 7;
 }
 
 message GitReleaseResponse {
@@ -125,4 +128,15 @@ message GitRetryRequest {
 message GitRetryResponse {
   bool success = 1;
   string message = 2;
+}
+
+message GitAuditRequest {
+  string id = 1;
+  string project_name = 2;
+}
+
+message GitAuditResponse {
+  bool success = 1;
+  string message = 2;
+  string result_json = 3;
 }

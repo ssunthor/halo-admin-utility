@@ -1,3 +1,4 @@
+import os
 import click
 import json
 from cli.utils import get_hau_stub
@@ -44,9 +45,10 @@ def generate_changelog(ctx, repo, branch):
 @click.option('--repo', required=True, help="Repository name")
 @click.option('--branch', default='main', help="Target branch")
 @click.option('--start-version', default='0.1.0', help="Starting version")
+@click.option('--start-commit', default='', help="Optional starting commit hash (exclusive)")
 @click.option('--out', default='backfill_output.yaml', help="Output file path")
 @click.pass_context
-def backfill_changelog(ctx, repo, branch, start_version, out):
+def backfill_changelog(ctx, repo, branch, start_version, start_commit, out):
     """Backfills a semantic changelog via the HAU gRPC streaming backend."""
     config = ctx.obj['config']
     
@@ -57,7 +59,8 @@ def backfill_changelog(ctx, repo, branch, start_version, out):
         request = hau_pb2.GitBackfillRequest(
             project_name=repo,
             branch_name=branch,
-            start_version=start_version
+            start_version=start_version,
+            start_commit=start_commit
         )
         
         # This will block and stream responses from the server
@@ -68,6 +71,9 @@ def backfill_changelog(ctx, repo, branch, start_version, out):
                 return
                 
             if response.changelog_yaml:
+                out_dir = os.path.dirname(os.path.abspath(out))
+                if out_dir:
+                    os.makedirs(out_dir, exist_ok=True)
                 with open(out, 'w') as f:
                     f.write(response.changelog_yaml)
                 click.secho(f"\nFinal changelog written to {out}", fg="green")

@@ -21,10 +21,27 @@
   changes:
     - category: '✨ New Features & Enhancements'
       items:
+        - 'Implemented the `hau git sync-inventory` CLI command and `GitInventorySync` gRPC endpoint to fetch and bulk-upsert the entire GitLab repository hierarchy (projects, branches, container registries) into a local PostgreSQL database.'
+        - 'Implemented the `hau git inventory` CLI command to present a unified topological tree of GitLab resources, seamlessly linking branches with their built container images, mapping `-dev` pre-releases to their source features, and tracking active deployments in real-time.'
+        - 'Implemented `GetChangelog` and `GetDocumentation` gRPC endpoints in HAU to dynamically serve markdown documentation and changelogs directly from the central `ai/halo/deployment/docs` repository.'
         - 'Added `--start-commit` optional flag to `hau changelog backfill` (and integrated into `GitBackfillRequest` protobuf) to manually override the starting commit boundary during changelog backfills.'
+        - 'Refactored `hau inventory list` topology output to logically group all computational resources by tenant namespace as the primary hierarchy instead of raw cluster locations.'
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Engineered a highly-relational SQLAlchemy database schema (`GitProject`, `GitBranch`, `GitContainer`) to persistently cache GitLab structures, enabling sub-millisecond inventory queries and the ability to append metadata like `is_ignored` flags.'
+        - 'Engineered `GitlabManager` with a multi-threaded two-pass fetcher that queries GraphQL for Git structures and falls back to concurrent REST calls to resolve author information, exclusively utilized by the `sync-inventory` background engine.'
+        - 'Integrated the `GitReleaseAuditLog` Postgres database into the Git Inventory engine to accurately map `-dev` pre-release tags back to their original source features during structure generation.'
+        - 'Integrated `TenantResourceInventory` into the Git Inventory engine to dynamically track and display the live active Kubernetes deployment count for every Git container tag in real-time.'
+        - 'Updated Postgres database schema (`tenant_resource_inventory`) and `inventory sync` logic to actively track and persist the precise `cluster_name` for every individual resource, allowing hybrid-cloud workloads (e.g. app components in App-Cluster, GPU pipelines in GPU-Cluster) to be accurately sorted under a single unified tenant namespace.'
+    - category: '🧹 Refactoring & Chores'
+      items:
+        - 'Decoupled HAU gRPC controllers (`hau_service.py`) from raw SQLAlchemy models by enforcing a strict Repository pattern via `SQLReader` and `SQLWriter`, consolidating all database access logic into centralized I/O handlers. [NEEDS_DOCS]'
     - category: '🐛 Bug Fixes & Resilience'
       items:
         - 'Fixed an issue in `changelog_orchestrator.py` where backfilling a repository with merged histories (like a monorepo initialization) would incorrectly process the entire historical commit tree instead of isolating the specific day''s commits.'
+        - 'Added `-fortinet-pipeline` suffixes to `InventoryOrchestrator` topological inference logic to properly map Fortinet-based Morpheus GPU deployments to their respective namespaces rather than the generic `unmapped-gpu` bucket.'
+        - 'Fixed an issue in `git containers` where semantic version tags (releases) were incorrectly flagged as `[⚠️ Branch Deleted]` by verifying against Git tags instead of just active branches.'
+        - 'Fixed `git containers` tag-to-branch mapping where container tags with hyphens (`feat-author-test-2`) failed to map to branches with slashes (`feat/author-test-2`), incorrectly flagging them as deleted and displaying the author as `Unknown`.'
 
 - version: '0.0.6'
   date: '2026-07-28'

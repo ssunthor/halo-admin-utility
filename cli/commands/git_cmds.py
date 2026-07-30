@@ -7,11 +7,33 @@ def git_cli():
     """Git workspace and repository operations."""
     pass
 
-@git_cli.command(name='containers')
+@git_cli.command(name='sync-inventory')
 @click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
 @handle_grpc_errors
 @click.pass_context
-def git_containers(ctx, as_grpc):
+def git_sync_inventory(ctx, as_grpc):
+    """Synchronizes Git inventory, branches, and container tags into the database."""
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    req = hau_pb2.GitInventorySyncRequest()
+    click.echo("Starting Git Inventory Sync. This may take a moment to fetch and upsert...")
+    resp = stub.GitInventorySync(req)
+    
+    if as_grpc:
+        print_grpc_json(resp)
+        return
+        
+    if not resp.success:
+        click.secho(f"Failed: {resp.message}", fg='red')
+    else:
+        click.secho(f"Success: {resp.message}", fg='green', bold=True)
+
+@git_cli.command(name='containers')
+@click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
+@click.option("--project", "-p", default=None, help="Filter containers by project name")
+@handle_grpc_errors
+@click.pass_context
+def git_containers(ctx, as_grpc, project):
     """Lists the available container registry tags for the HALO repository."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
@@ -35,10 +57,12 @@ def git_containers(ctx, as_grpc):
             
         grouped_tags = {}
         for tag in tags:
-            project = tag.get('project', 'unknown')
-            if project not in grouped_tags:
-                grouped_tags[project] = []
-            grouped_tags[project].append(tag)
+            tag_project = tag.get('project', 'unknown')
+            if project and project not in tag_project:
+                continue
+            if tag_project not in grouped_tags:
+                grouped_tags[tag_project] = []
+            grouped_tags[tag_project].append(tag)
             
         for project_name, project_tags in grouped_tags.items():
             click.secho(f"\n📁 {project_name}", fg='magenta', bold=True)
@@ -51,13 +75,92 @@ def git_containers(ctx, as_grpc):
                 status_flag = ""
                 stable_tags = ['main', 'latest', 'demo', 'dev', 'stable', 'master']
                 
-                if not t.get('branch_exists') and tag_name not in stable_tags:
+                is_git_tag = t.get('is_git_tag')
+                if is_git_tag:
+                    status_flag = click.style(" [📦 Release]", fg='green', bold=True)
+                elif not t.get('branch_exists') and tag_name not in stable_tags:
                     status_flag = click.style(" [⚠️ Branch Deleted]", fg='yellow', bold=True)
                 
                 click.echo(f"  [TAG] {click.style(tag_name, fg='cyan', bold=True)}{status_flag} "
                            f"({click.style(path, fg='white', dim=True)}) "
                            f"- Created: {created} | Author: {author}")
         click.echo()
+    except json.JSONDecodeError:
+        click.secho(f"Failed to parse JSON response: {resp.result_json}", fg='red')
+
+@git_cli.command(name='inventory')
+@click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
+@click.option("--project", default=None, help="Project name or full path to filter inventory by")
+@handle_grpc_errors
+@click.pass_context
+def git_inventory(ctx, as_grpc, project):
+    """Fetches a high-speed Git inventory using GitLab's GraphQL API."""
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    req = hau_pb2.GitInventoryRequest(project_name=project if project else "")
+    click.echo(f"Fetching Git Inventory{' for ' + project if project else ''} from DB...")
+    resp = stub.GitInventory(req)
+    
+    if as_grpc:
+        print_grpc_json(resp)
+        return
+        
+    if not resp.success:
+        click.secho(f"❌ {resp.message}", fg='red')
+        return
+        
+    try:
+        data = json.loads(resp.result_json)
+        projects = data.get("projects", [])
+        click.secho(f"\nGit Inventory{' for ' + project if project else ''}:\n", fg='cyan', bold=True)
+        if not projects:
+            click.echo("No projects found.")
+            return
+            
+        for p in projects:
+            path_name = p.get('fullPath') or p.get('path', 'unknown-path')
+            click.secho(f"📁 {path_name}", fg='magenta', bold=True)
+            inv = p.get('inventory', {})
+            
+            def print_container(c, label=""):
+                active_deployments = c.get('active_deployments', 0)
+                namespaces = c.get('active_namespaces', [])
+                ns_str = f" in {', '.join(namespaces)}" if namespaces else ""
+                active_str = click.style(f" [🚀 Active Deployments: {active_deployments}{ns_str}]", fg='green', bold=True) if active_deployments > 0 else ""
+                tag_name = click.style(c.get('tag', c.get('container_tag', '')), fg='cyan', bold=True)
+                author = c.get('author', c.get('branch_author', 'Unknown'))
+                created = c.get('created_at', c.get('container_created', 'unknown'))
+                
+                extra = ""
+                if 'branch' in c:
+                    extra = f" (Branch: {c['branch']})"
+                if 'source_feature' in c and c['source_feature'] != "Unknown":
+                    extra = f" (Feature: {c['source_feature']})"
+                
+                click.echo(f"      - {label}{tag_name}{extra}{active_str} | Created: {created} | Author: {author}")
+                
+            if inv.get('releases'):
+                click.secho(f"   🚀 Releases:", fg='green')
+                for c in inv['releases']: print_container(c, "📦 ")
+            
+            if inv.get('pre_releases'):
+                click.secho(f"   🚧 Pre-releases (-dev):", fg='yellow')
+                for c in inv['pre_releases']: print_container(c, "📦 ")
+                
+            if inv.get('features'):
+                click.secho(f"   ✨ Active Features:", fg='blue')
+                for c in inv['features']: print_container(c, "📦 ")
+                
+            if inv.get('standalone_features'):
+                click.secho(f"   👻 Standalone Containers (Branch Deleted):", fg='red')
+                for c in inv['standalone_features']: print_container(c, "📦 ")
+                
+            if inv.get('active_branches_without_containers'):
+                click.secho(f"   🌱 Active Branches (No Container):", fg='cyan', dim=True)
+                for b in inv['active_branches_without_containers']:
+                    click.echo(f"      - 🌿 {click.style(b['branch'], fg='white', bold=True)} | Author: {b.get('author', 'Unknown')}")
+            click.echo()
+            
     except json.JSONDecodeError:
         click.secho(f"Failed to parse JSON response: {resp.result_json}", fg='red')
 

@@ -15,6 +15,11 @@ service HauService {
   rpc GitRelease(GitReleaseRequest) returns (stream GitReleaseResponse);
   rpc GitRetry(GitRetryRequest) returns (stream GitRetryResponse);
   rpc GitAudit(GitAuditRequest) returns (GitAuditResponse);
+  rpc GitInventory(GitInventoryRequest) returns (GitInventoryResponse);
+  rpc GetChangelog(GetChangelogRequest) returns (GetChangelogResponse);
+  rpc GetDocumentation(GetDocumentationRequest) returns (GetDocumentationResponse);
+  rpc GitInventorySync(GitInventorySyncRequest) returns (GitInventorySyncResponse);
+  rpc SetTenantInternal(SetTenantInternalRequest) returns (SetTenantInternalResponse);
 }
 
 message InventorySyncRequest {}
@@ -32,6 +37,16 @@ message InventoryListResponse {
   bool success = 1;
   string message = 2;
   string result_json = 3;
+}
+
+message SetTenantInternalRequest {
+  string tenant_slug = 1;
+  bool is_internal = 2;
+}
+
+message SetTenantInternalResponse {
+  bool success = 1;
+  string message = 2;
 }
 
 message GitContainersRequest {}
@@ -139,4 +154,46 @@ message GitAuditResponse {
   bool success = 1;
   string message = 2;
   string result_json = 3;
+}
+
+message GitInventoryRequest {
+  string project_name = 1;
+}
+
+message GitInventoryResponse {
+  bool success = 1;
+  string message = 2;
+  string result_json = 3;
+}
+
+message GetChangelogRequest {
+  string project_name = 1; 
+}
+
+message GetChangelogResponse {
+  bool success = 1;
+  string message = 2;
+  string raw_yaml_changelog = 3;
+}
+
+message GetDocumentationRequest {
+  string project_name = 1;
+}
+
+message Document {
+  string filename = 1;
+  string raw_markdown = 2;
+}
+
+message GetDocumentationResponse {
+  bool success = 1;
+  string message = 2;
+  repeated Document documents = 3;
+}
+
+message GitInventorySyncRequest {}
+
+message GitInventorySyncResponse {
+  bool success = 1;
+  string message = 2;
 }

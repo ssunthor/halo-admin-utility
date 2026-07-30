@@ -36,6 +36,7 @@ class HaloTenant(Base):
     halo_version = Column(String(50), nullable=True)
     environment = Column(String(50), nullable=True)
     is_internal = Column(Boolean, default=False)
+    is_internal_overridden = Column(Boolean, default=False)
     url = Column(String(255), nullable=True)
     lifecycle_state = Column(SQLEnum(LifecycleState), default=LifecycleState.ONBOARDING)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -76,6 +77,7 @@ class TenantResourceInventory(Base):
     tenant_id = Column(String(36), ForeignKey('halo_tenant.id'), nullable=False)
     resource_type = Column(String(50), nullable=False)
     resource_name = Column(String(255), nullable=False)
+    cluster_name = Column(String(50), nullable=True)
     status = Column(String(50), default='PROVISIONED')
     metadata_json = Column(JSON, nullable=True)
 
@@ -113,3 +115,49 @@ class GitReleaseAuditLog(Base):
     job_details_json = Column(JSON, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class ProjectType(enum.Enum):
+    APPLICATION = "APPLICATION"
+    INFORMATIONAL = "INFORMATIONAL"
+    TEMPLATE = "TEMPLATE"
+
+class GitProject(Base):
+    __tablename__ = 'git_project'
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_path = Column(String(255), nullable=False, unique=True)
+    project_name = Column(String(100), nullable=False)
+    project_type = Column(SQLEnum(ProjectType), default=ProjectType.APPLICATION)
+    
+    is_deprecated = Column(Boolean, default=False)
+    is_ignored = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    branches = relationship("GitBranch", back_populates="project", cascade="all, delete-orphan")
+    containers = relationship("GitContainer", back_populates="project", cascade="all, delete-orphan")
+
+class GitBranch(Base):
+    __tablename__ = 'git_branch'
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey('git_project.id'), nullable=False)
+    name = Column(String(255), nullable=False)
+    author = Column(String(255), nullable=True)
+    
+    project = relationship("GitProject", back_populates="branches")
+
+class GitContainer(Base):
+    __tablename__ = 'git_container'
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey('git_project.id'), nullable=False)
+    tag_name = Column(String(255), nullable=False)
+    image_path = Column(String(512), nullable=False)
+    author = Column(String(255), nullable=True)
+    is_git_tag = Column(Boolean, default=False)
+    branch_exists = Column(Boolean, default=False)
+    tag_created_at = Column(DateTime, nullable=True)
+    
+    project = relationship("GitProject", back_populates="containers")

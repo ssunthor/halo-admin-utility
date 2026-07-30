@@ -160,3 +160,15 @@ To ensure absolute accuracy in customer-facing release notes and prevent LLM hal
 2. **Phase 2 (Execute & Orchestrate):** The operator reviews the proposed changelog in the UI, making any necessary manual corrections to categorizations or descriptions. Upon clicking "Approve & Release", the UI sends the finalized YAML back to HAU, which then executes the `git commit`, `git push`, and GitLab MR creation in one atomic transaction.
 
 This pattern shifts HAU from a "zero-touch automation" tool to an "automation-assisted" control plane, prioritizing stability and human oversight for production rollouts.
+
+### 7.5. LLM-Driven Incremental Documentation Auto-Updates
+To keep ecosystem design documentation (`_design.md`) perfectly synchronized with codebase evolution, HAU will automatically propose documentation updates during the Git Release lifecycle.
+
+Rather than forcing the LLM to rewrite entire `.md` files—which is token-heavy and risks formatting regressions—HAU will leverage a **Semantic Section Replacement** architecture. 
+
+Because all HALO documentation strictly adheres to the 13-point mandatory structure defined in `docs_concept.md`, the LLM interaction becomes highly precise and deterministic:
+1. **Decision Phase:** The LLM reads the freshly generated `CHANGELOG.yaml` and the existing `_design.md` document, determining *if* an update is warranted, and explicitly identifying *which* of the 13 strict sections (e.g., `5. Detailed Business Logic & Rules`) require modifications.
+2. **Focused Rewrite:** If an update is required, the LLM reads the raw Git commit diffs for deep technical context, and generates a completely rewritten payload for **only** that specific section.
+3. **Deterministic Splice:** A Python parser within `release_orchestrator.py` dynamically splices the LLM's rewritten section back into the Markdown file using regex header matching, leaving the rest of the document completely untouched.
+
+This architecture guarantees 0% hallucination for unaffected sections, perfectly preserves mandatory document structures, and leverages local high-compute (24x H100 GPUs) specifically for extreme precision in targeted contextual rewriting.

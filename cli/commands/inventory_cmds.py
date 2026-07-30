@@ -59,18 +59,18 @@ def list_inventory(ctx, tenant, as_grpc):
     if resp.success:
         data = json.loads(resp.result_json)
         click.secho("\n=== HALO ECOSYSTEM COMPUTATIONAL TOPOLOGY (DATABASE) ===", bold=True)
-        for location, tenants in data.items():
-            click.secho(f"\n[{location.upper()} CLUSTER]", fg='cyan', bold=True)
-            if not tenants:
-                click.secho("  (No HALO tenants discovered)", fg='yellow')
+        for slug, clusters in data.items():
+            click.secho(f"\n[NAMESPACE: {slug.upper()}]", fg='cyan', bold=True)
+            if not clusters:
+                click.secho("  (No clusters discovered)", fg='yellow')
                 continue
                 
-            for slug, details in tenants.items():
+            for location, details in clusters.items():
                 env = details.get('environment', 'unknown')
                 internal = "INTERNAL" if details.get('is_internal') else "EXTERNAL"
                 url = details.get('url')
                 url_str = f" [{url}]" if url else ""
-                click.secho(f"\n  ► TENANT: {slug} [{env.upper()}] [{internal}]{url_str}", fg='blue', bold=True)
+                click.secho(f"\n  ► CLUSTER: {location.upper()} [{env.upper()}] [{internal}]{url_str}", fg='blue', bold=True)
                 
                 resources = details.get('resources', {})
                 for kind, items in resources.items():
@@ -85,3 +85,24 @@ def list_inventory(ctx, tenant, as_grpc):
     else:
         click.echo(f"❌ Failed: {resp.message}")
         sys.exit(1)
+
+@inventory_cli.command(name='set-internal')
+@click.argument('tenant_slug')
+@click.argument('is_internal', type=click.BOOL)
+@click.pass_context
+@handle_grpc_errors
+def set_internal(ctx, tenant_slug, is_internal):
+    """Manually override a tenant's internal flag."""
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    if not stub:
+        click.echo("[FATAL] Could not connect to gRPC server.")
+        return
+        
+    req = hau_pb2.SetTenantInternalRequest(tenant_slug=tenant_slug, is_internal=is_internal)
+    resp = stub.SetTenantInternal(req)
+    
+    if resp.success:
+        click.echo(f"✅ {resp.message}")
+    else:
+        click.echo(f"❌ Failed: {resp.message}")

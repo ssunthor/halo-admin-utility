@@ -82,7 +82,7 @@ class InventoryOrchestrator:
                     "status": f"{d.status.ready_replicas or 0}/{d.status.replicas or 0} Ready",
                     "image": image
                 }
-                self.sql_writer.upsert_tenant_resource(tenant.id, 'Deployments', d.metadata.name, meta)
+                self.sql_writer.upsert_tenant_resource(tenant.id, 'Deployments', d.metadata.name, meta, app_cluster)
         except Exception as e:
             logger.error(f"Failed to list deployments in {ns_name}: {e}")
 
@@ -99,7 +99,7 @@ class InventoryOrchestrator:
                     "cluster_ip": s.spec.cluster_ip,
                     "ports": ", ".join(port_maps)
                 }
-                self.sql_writer.upsert_tenant_resource(tenant.id, 'Services', s.metadata.name, meta)
+                self.sql_writer.upsert_tenant_resource(tenant.id, 'Services', s.metadata.name, meta, app_cluster)
         except Exception as e:
             logger.error(f"Failed to list services in {ns_name}: {e}")
 
@@ -115,7 +115,7 @@ class InventoryOrchestrator:
                 meta = {
                     "backend_ips": ", ".join(target_ips) if target_ips else "No active backends"
                 }
-                self.sql_writer.upsert_tenant_resource(tenant.id, 'Endpoints', e.metadata.name, meta)
+                self.sql_writer.upsert_tenant_resource(tenant.id, 'Endpoints', e.metadata.name, meta, app_cluster)
         except Exception as e:
             logger.error(f"Failed to list endpoints in {ns_name}: {e}")
             
@@ -129,7 +129,7 @@ class InventoryOrchestrator:
                     "host_ip": p.status.host_ip if p.status.host_ip else "Unknown",
                     "node_name": p.spec.node_name if p.spec.node_name else "Unknown"
                 }
-                self.sql_writer.upsert_tenant_resource(tenant.id, 'Active Pods', p.metadata.name, meta)
+                self.sql_writer.upsert_tenant_resource(tenant.id, 'Active Pods', p.metadata.name, meta, app_cluster)
         except Exception as e:
             logger.error(f"Failed to list pods in {ns_name}: {e}")
             
@@ -141,7 +141,7 @@ class InventoryOrchestrator:
                     "status": p.status.phase,
                     "size": p.spec.resources.requests.get('storage', 'Unknown') if p.spec.resources.requests else "Unknown"
                 }
-                self.sql_writer.upsert_tenant_resource(tenant.id, 'PVCs', p.metadata.name, meta)
+                self.sql_writer.upsert_tenant_resource(tenant.id, 'PVCs', p.metadata.name, meta, app_cluster)
         except Exception as e:
             logger.error(f"Failed to list pvcs in {ns_name}: {e}")
 
@@ -168,7 +168,7 @@ class InventoryOrchestrator:
                     "hosts": ", ".join(hosts),
                     "load_balancer_ips": ", ".join(lb_ips) if lb_ips else "Pending/None"
                 }
-                self.sql_writer.upsert_tenant_resource(tenant.id, 'Ingresses', i.metadata.name, meta)
+                self.sql_writer.upsert_tenant_resource(tenant.id, 'Ingresses', i.metadata.name, meta, app_cluster)
         except Exception as e:
             logger.error(f"Failed to list ingresses in {ns_name}: {e}")
 
@@ -180,7 +180,7 @@ class InventoryOrchestrator:
                 meta = {
                     "matched_keys": ", ".join(matched_keys)
                 }
-                self.sql_writer.upsert_tenant_resource(tenant.id, 'ConfigMaps', c.metadata.name, meta)
+                self.sql_writer.upsert_tenant_resource(tenant.id, 'ConfigMaps', c.metadata.name, meta, app_cluster)
         except Exception as e:
             logger.error(f"Failed to list configmaps in {ns_name}: {e}")
 
@@ -234,7 +234,7 @@ class InventoryOrchestrator:
                 "status": f"{d.status.ready_replicas or 0}/{d.status.replicas or 0} Ready",
                 "image": image
             }
-            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Deployments', dep_name, meta)
+            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Deployments', dep_name, meta, gpu_cluster)
             
         for s in svcs.items:
             svc_name = s.metadata.name
@@ -250,7 +250,7 @@ class InventoryOrchestrator:
                 "cluster_ip": s.spec.cluster_ip,
                 "ports": ", ".join(port_maps)
             }
-            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Services', svc_name, meta)
+            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Services', svc_name, meta, gpu_cluster)
             
         for e in endpoints.items:
             ep_name = e.metadata.name
@@ -265,7 +265,7 @@ class InventoryOrchestrator:
             meta = {
                 "backend_ips": ", ".join(target_ips) if target_ips else "No active backends"
             }
-            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Endpoints', ep_name, meta)
+            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Endpoints', ep_name, meta, gpu_cluster)
             
         for p in pods.items:
             pod_name = p.metadata.name
@@ -280,7 +280,7 @@ class InventoryOrchestrator:
                 "host_ip": p.status.host_ip if p.status.host_ip else "Unknown",
                 "node_name": p.spec.node_name if p.spec.node_name else "Unknown"
             }
-            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Active_Pods', pod_name, meta)
+            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Active_Pods', pod_name, meta, gpu_cluster)
 
 
     def _infer_tenant_from_pipeline(self, dep_name):
@@ -289,7 +289,8 @@ class InventoryOrchestrator:
         suffixes_to_strip = [
             '-syslog-pipeline', '-syslog-pipeline-v2', 
             '-netflow-pipeline', '-netflow-pipeline-v2', 
-            '-netflow-dfp', '-firewall-pipeline', '-firewall-pipeline-v2'
+            '-netflow-dfp', '-firewall-pipeline', '-firewall-pipeline-v2',
+            '-fortinet-pipeline', '-fortinet-pipeline-v2'
         ]
         
         base_name = dep_name

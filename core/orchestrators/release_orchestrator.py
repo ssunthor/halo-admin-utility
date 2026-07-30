@@ -336,6 +336,21 @@ class ReleaseOrchestrator:
                         yield {"success": False, "message": f"Failed to push changelog after rebase: {push_res_2.stderr}"}
                         return
                     yield "Successfully rebased and pushed changelog."
+                
+                yield f"Syncing changelog to deployment docs repository..."
+                try:
+                    proj_basename = project_name.split('/')[-1]
+                    self.gitlab_manager.commit_file_api(
+                        project_path="ai/halo/deployment",
+                        file_path=f"docs/{proj_basename}/CHANGELOG.yaml",
+                        content=open(cl_path, 'r').read(),
+                        branch="main",
+                        commit_msg=f"chore(docs): sync changelog for {proj_basename} v{version}"
+                    )
+                    yield f"Successfully synced changelog to deployment/docs/{proj_basename}/CHANGELOG.yaml."
+                except Exception as e:
+                    logger.error(f"[GitRelease] Failed to push changelog to deployment repo: {e}")
+                    yield f"Warning: Failed to sync changelog to deployment repo: {e}"
                         
             except Exception as e:
                 logger.error(f"[GitRelease] Changelog generation/backfill failed: {e}")

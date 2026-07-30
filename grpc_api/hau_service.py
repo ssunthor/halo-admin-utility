@@ -14,6 +14,8 @@ from core.orchestrators.inventory_orchestrator import InventoryOrchestrator
 from core.orchestrators.changelog_orchestrator import ChangelogOrchestrator
 from core.orchestrators.release_orchestrator import ReleaseOrchestrator
 
+import datetime
+
 logger = logging.getLogger(__name__)
 
 def extract_client_id(context) -> str:
@@ -80,12 +82,16 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
 
     @handle_rpc(hau_pb2.GitContainersResponse)
     def GitContainers(self, request, context):
-        if not self.gitlab_manager:
-            return hau_pb2.GitContainersResponse(success=False, message="GitlabManager is not initialized.", result_json="[]")
-        
-        project_path = self.config['external_services']['gitlab']['project_path']
-        result_json = self.gitlab_manager.fetch_container_tags(project_path)
-        return hau_pb2.GitContainersResponse(success=True, message="Tags fetched successfully", result_json=result_json)
+        try:
+            with self._get_db_session(write=False) as session:
+                if not session:
+                    return hau_pb2.GitContainersResponse(success=False, message="Database not available.", result_json="[]")
+                reader = SQLReader(session)
+                all_tags = reader.get_git_containers()
+            return hau_pb2.GitContainersResponse(success=True, message="Tags fetched from DB", result_json=json.dumps(all_tags))
+        except Exception as e:
+            logger.error(f"[GitContainers] DB fetch failed: {e}")
+            return hau_pb2.GitContainersResponse(success=False, message=str(e), result_json="[]")
 
     @handle_rpc(hau_pb2.GitSyncResponse)
     def GitSync(self, request, context):
@@ -148,6 +154,22 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             result = sql_reader.get_all_inventory(tenant_slug=request.tenant_slug)
             
             return hau_pb2.InventoryListResponse(success=True, message="Fetched inventory", result_json=json.dumps(result))
+
+    @handle_rpc(hau_pb2.SetTenantInternalResponse)
+    def SetTenantInternal(self, request, context):
+        from core.database.models import HaloTenant
+        with self._get_db_session(write=True) as session:
+            if not session:
+                return hau_pb2.SetTenantInternalResponse(success=False, message="Database configuration is missing.")
+            
+            tenant = session.query(HaloTenant).filter_by(slug_name=request.tenant_slug).first()
+            if not tenant:
+                return hau_pb2.SetTenantInternalResponse(success=False, message=f"Tenant '{request.tenant_slug}' not found.")
+            
+            tenant.is_internal = request.is_internal
+            tenant.is_internal_overridden = True
+            
+            return hau_pb2.SetTenantInternalResponse(success=True, message=f"Successfully set {request.tenant_slug} is_internal={request.is_internal}")
 
     @handle_rpc(hau_pb2.GenerateChangelogResponse)
     def GenerateChangelog(self, request, context):
@@ -333,38 +355,18 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
 
     @handle_rpc(hau_pb2.GitAuditResponse)
     def GitAudit(self, request, context):
-        from core.database.models import GitReleaseAuditLog
+
         try:
             with self._get_db_session(write=False) as session:
                 if not session:
                     return hau_pb2.GitAuditResponse(success=False, message="Database not configured")
                     
-                query = session.query(GitReleaseAuditLog)
-                
-                if request.id:
-                    query = query.filter(GitReleaseAuditLog.id.startswith(request.id))
-                elif request.project_name:
-                    query = query.filter(GitReleaseAuditLog.project_name == request.project_name)
-                    
-                records = query.order_by(GitReleaseAuditLog.timestamp.desc()).limit(50).all()
-                
-                result = []
-                for rec in records:
-                    result.append({
-                        "id": rec.id,
-                        "timestamp": rec.timestamp.isoformat() if rec.timestamp else None,
-                        "project_name": rec.project_name,
-                        "source_branch": getattr(rec, 'source_branch', 'N/A'),
-                        "target_branch": getattr(rec, 'target_branch', 'N/A'),
-                        "version_tag": rec.version_tag,
-                        "action": rec.action,
-                        "actor": rec.actor,
-                        "status": rec.status,
-                        "error_message": getattr(rec, 'error_message', None),
-                        "changelog_generation_method": rec.changelog_generation_method,
-                        "merged_features_json": rec.merged_features_json,
-                        "job_details_json": rec.job_details_json
-                    })
+                reader = SQLReader(session)
+                result = reader.get_git_audit_logs(
+                    limit=50,
+                    audit_id=request.id if request.id else None,
+                    project_name=request.project_name if request.project_name else None
+                )
                     
                 return hau_pb2.GitAuditResponse(
                     success=True, 
@@ -374,3 +376,106 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         except Exception as e:
             logger.error(f"[GitAudit] Failed to fetch audit logs: {e}")
             return hau_pb2.GitAuditResponse(success=False, message=str(e))
+
+    @handle_rpc(hau_pb2.GitInventorySyncResponse)
+    def GitInventorySync(self, request, context):
+        if not self.gitlab_manager:
+            return hau_pb2.GitInventorySyncResponse(success=False, message="GitlabManager is not initialized.")
+            
+        try:
+            audit_mapping = {}
+            with self._get_db_session(write=False) as session:
+                if session:
+                    reader = SQLReader(session)
+                    logs = reader.get_successful_git_releases()
+                    for log in logs:
+                        if log.version_tag and log.project_name:
+                            if log.project_name not in audit_mapping:
+                                audit_mapping[log.project_name] = {}
+                            audit_mapping[log.project_name][log.version_tag] = log.source_branch
+
+            # Fetch live from Gitlab
+            result_json = self.gitlab_manager.fetch_git_inventory_graphql(group_path="ai/halo", audit_mapping=audit_mapping)
+            data = json.loads(result_json)
+            
+            # Upsert to DB
+            with self._get_db_session(write=True) as session:
+                if not session:
+                    return hau_pb2.GitInventorySyncResponse(success=False, message="Database not available.")
+                writer = SQLWriter(session)
+                writer.upsert_git_inventory(data)
+                
+            return hau_pb2.GitInventorySyncResponse(success=True, message="Successfully synced Git Inventory to DB.")
+        except Exception as e:
+            logger.error(f"[GitInventorySync] Failed: {e}")
+            return hau_pb2.GitInventorySyncResponse(success=False, message=str(e))
+
+
+    @handle_rpc(hau_pb2.GitInventoryResponse)
+    def GitInventory(self, request, context):
+        try:
+            with self._get_db_session(write=False) as session:
+                if not session:
+                    return hau_pb2.GitInventoryResponse(success=False, message="Database not available.", result_json="[]")
+                reader = SQLReader(session)
+                result = reader.get_git_inventory(request.project_name)
+            return hau_pb2.GitInventoryResponse(success=True, message="Fetched from DB", result_json=json.dumps({"projects": result}))
+        except Exception as e:
+            logger.error(f"[GitInventory] DB fetch failed: {e}")
+            return hau_pb2.GitInventoryResponse(success=False, message=str(e), result_json="[]")
+
+    @handle_rpc(hau_pb2.GetChangelogResponse)
+    def GetChangelog(self, request, context):
+        if not self.gitlab_manager:
+            return hau_pb2.GetChangelogResponse(success=False, message="GitlabManager not init.")
+        try:
+            project = request.project_name
+            try:
+                file_path = f"docs/{project}/CHANGELOG.yaml"
+                raw_yaml = self.gitlab_manager.fetch_raw_yaml("ai/halo/deployment", file_path)
+            except Exception as e:
+                if "404" in str(e):
+                    normalized_project = project.lower().replace(" ", "-")
+                    file_path = f"docs/{normalized_project}/CHANGELOG.yaml"
+                    raw_yaml = self.gitlab_manager.fetch_raw_yaml("ai/halo/deployment", file_path)
+                else:
+                    raise e
+            return hau_pb2.GetChangelogResponse(success=True, message="Fetched changelog", raw_yaml_changelog=raw_yaml)
+        except Exception as e:
+            logger.error(f"Failed to fetch changelog for {request.project_name}: {e}")
+            return hau_pb2.GetChangelogResponse(success=False, message=str(e))
+
+    @handle_rpc(hau_pb2.GetDocumentationResponse)
+    def GetDocumentation(self, request, context):
+        if not self.gitlab_manager:
+            return hau_pb2.GetDocumentationResponse(success=False, message="GitlabManager not init.")
+        try:
+            import gitlab
+            gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
+            project_client = gl.projects.get("ai/halo/deployment")
+            
+            project_name = request.project_name
+            doc_path = f"docs/{project_name}"
+            
+            try:
+                tree = project_client.repository_tree(path=doc_path, ref='main')
+            except gitlab.exceptions.GitlabGetError as e:
+                if e.response_code == 404:
+                    normalized_project = project_name.lower().replace(" ", "-")
+                    doc_path = f"docs/{normalized_project}"
+                    tree = project_client.repository_tree(path=doc_path, ref='main')
+                else:
+                    raise e
+
+            docs = {}
+            for item in tree:
+                if item['type'] == 'blob' and item['name'].endswith('.md'):
+                    f = project_client.files.get(file_path=item['path'], ref='main')
+                    import base64
+                    docs[item['name']] = base64.b64decode(f.content).decode('utf-8')
+            
+            doc_msgs = [hau_pb2.Document(filename=name, raw_markdown=content) for name, content in docs.items()]
+            return hau_pb2.GetDocumentationResponse(success=True, message="Fetched docs", documents=doc_msgs)
+        except Exception as e:
+            logger.error(f"Failed to fetch documentation for {request.project_name}: {e}")
+            return hau_pb2.GetDocumentationResponse(success=False, message=str(e))

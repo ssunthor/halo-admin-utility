@@ -16,7 +16,6 @@ class GitlabManager:
         self.token = self.config.get('bot_token')
 
     def fetch_raw_yaml(self, project_path, file_path, branch='main'):
-        """Fetches the raw file content from GitLab API without parsing it."""
         token = self.token
         
         try:
@@ -29,7 +28,6 @@ class GitlabManager:
             raise RuntimeError(f"Failed to fetch {file_path} via API: {e}")
 
     def fetch_repository_tree(self, project_path, path=''):
-        """Fetches the repository tree structure from GitLab API."""
         token = self.token
         
         try:
@@ -42,8 +40,31 @@ class GitlabManager:
         except Exception as e:
             raise RuntimeError(f"Failed to fetch repository tree via API: {e}")
 
+    def fetch_documentation(self, project_name):
+        gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
+        project_client = gl.projects.get("ai/halo/deployment")
+        
+        doc_path = f"docs/{project_name}"
+        
+        try:
+            tree = project_client.repository_tree(path=doc_path, ref='main')
+        except gitlab.exceptions.GitlabGetError as e:
+            if e.response_code == 404:
+                normalized_project = project_name.lower().replace(" ", "-")
+                doc_path = f"docs/{normalized_project}"
+                tree = project_client.repository_tree(path=doc_path, ref='main')
+            else:
+                raise e
+
+        docs = {}
+        for item in tree:
+            if item['type'] == 'blob' and item['name'].endswith('.md'):
+                f = project_client.files.get(file_path=item['path'], ref='main')
+                docs[item['name']] = base64.b64decode(f.content).decode('utf-8')
+        
+        return docs
+
     def sync_local_repo(self, project_path, local_path):
-        """Syncs the local repository by cloning or pulling."""
         token = self.token
         
         domain = self.url.replace('https://', '').replace('http://', '')
@@ -68,357 +89,10 @@ class GitlabManager:
             output = (result.stdout + "\n" + result.stderr).strip()
             return f"Successfully pulled latest changes for {project_path} in {local_path}.\n{output}"
 
-    def push_local_repo(self, project_path, local_path, commit_msg, branch='main'):
-        """Commits all local changes and pushes them to GitLab."""
-        token = self.token
-        
-        if not os.path.exists(os.path.join(local_path, '.git')):
-            raise RuntimeError(f"No git repository found at {local_path}. Run sync first.")
-            
-        add_res = subprocess.run(['git', 'add', '.'], cwd=local_path, capture_output=True, text=True)
-        if add_res.returncode != 0:
-            raise RuntimeError(f"Git add failed: {add_res.stderr}")
-            
-        status_res = subprocess.run(['git', 'status', '--porcelain'], cwd=local_path, capture_output=True, text=True)
-        if not status_res.stdout.strip():
-            return "No changes to commit."
-
-        author_name = self.config.get('author_name', 'HAU Auto Sync')
-        author_email = self.config.get('author_email', 'sera-ai@gtt.net')
-        subprocess.run(['git', 'config', 'user.name', author_name], cwd=local_path)
-        subprocess.run(['git', 'config', 'user.email', author_email], cwd=local_path)
-
-        commit_res = subprocess.run(['git', 'commit', '-m', commit_msg], cwd=local_path, capture_output=True, text=True)
-        if commit_res.returncode != 0:
-            raise RuntimeError(f"Git commit failed: {commit_res.stderr}")
-            
-        domain = self.url.replace('https://', '').replace('http://', '')
-        repo_url = f"https://oauth2:{token}@{domain}/{project_path}.git"
-        subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=local_path)
-            
-        logger.info(f"Pushing changes to origin {branch}... (this may take a while)")
-        push_res = subprocess.run(['git', 'push', 'origin', branch], cwd=local_path, capture_output=True, text=True)
-        if push_res.returncode != 0:
-            raise RuntimeError(f"Git push failed with exit code {push_res.returncode}\n{push_res.stderr}")
-            
-        output = (push_res.stdout + "\n" + push_res.stderr).strip()
-        return f"Successfully pushed changes: {commit_msg}\n{output}"
-
-    def fetch_git_inventory_graphql(self, group_path="ai/halo", audit_mapping=None):
-        """Fetches the Git inventory using GitLab GraphQL API + REST for tags."""
-        import requests
-        import json
-        import concurrent.futures
-        import gitlab
-        
-        if audit_mapping is None:
-            audit_mapping = {}
-            
-        gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
-        
-        query = """
-        query($groupPath: ID!) {
-          group(fullPath: $groupPath) {
-            projects(includeSubgroups: true, first: 30) {
-              nodes {
-                id
-                name
-                fullPath
-                repository {
-                  branchNames(searchPattern: "*", offset: 0, limit: 50)
-                }
-                containerRepositories(first: 5) {
-                  nodes {
-                    id
-                    name
-                    tagsCount
-                  }
-                }
-              }
-            }
-          }
-        }
-        """
-        
-        url = f"{self.url.rstrip('/')}/api/graphql"
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json"
-        }
-        
-        try:
-            response = requests.post(
-                url, 
-                json={"query": query, "variables": {"groupPath": group_path}}, 
-                headers=headers,
-                verify=False
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            if "errors" in data:
-                logger.error(f"GraphQL returned errors: {data['errors']}")
-                raise RuntimeError(f"GraphQL errors: {data['errors']}")
-                
-            group_data = data.get("data", {}).get("group")
-            if not group_data:
-                return json.dumps({"projects": []})
-                
-            projects = group_data.get("projects", {}).get("nodes", [])
-            
-            def fetch_tag_list(proj_id_num, repo_id_num):
-                try:
-                    res = requests.get(
-                        f"{self.url.rstrip('/')}/api/v4/projects/{proj_id_num}/registry/repositories/{repo_id_num}/tags?per_page=100",
-                        headers=headers, verify=False
-                    )
-                    if res.status_code == 200:
-                        return proj_id_num, repo_id_num, res.json()
-                except Exception:
-                    pass
-                return proj_id_num, repo_id_num, []
-
-            def fetch_tag_detail(proj_id_num, repo_id_num, tag_name):
-                try:
-                    res = requests.get(
-                        f"{self.url.rstrip('/')}/api/v4/projects/{proj_id_num}/registry/repositories/{repo_id_num}/tags/{tag_name}",
-                        headers=headers, verify=False
-                    )
-                    if res.status_code == 200:
-                        return res.json()
-                except Exception:
-                    pass
-                return {"name": tag_name}
-                
-            def fetch_project_git_info(proj_id_num):
-                try:
-                    project = gl.projects.get(proj_id_num)
-                    active_branches = {b.name: b.commit['author_name'] for b in project.branches.list(get_all=True)}
-                    active_git_tags = {gt.name: gt.commit['author_name'] for gt in project.tags.list(get_all=True)}
-                    return proj_id_num, active_branches, active_git_tags
-                except Exception:
-                    return proj_id_num, {}, {}
-                
-            fetch_tasks = {}
-            git_info_tasks = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-                for p in projects:
-                    proj_id = p.get('id', '').split('/')[-1]
-                    git_info_tasks[executor.submit(fetch_project_git_info, proj_id)] = proj_id
-                    for c in p.get('containerRepositories', {}).get('nodes', []):
-                        if c.get('tagsCount', 0) > 0:
-                            repo_id = c.get('id', '').split('/')[-1]
-                            fetch_tasks[executor.submit(fetch_tag_list, proj_id, repo_id)] = c.get('id')
-                            
-                project_git_infos = {}
-                for future in concurrent.futures.as_completed(git_info_tasks):
-                    proj_id, active_branches, active_git_tags = future.result()
-                    project_git_infos[proj_id] = (active_branches, active_git_tags)
-
-                repo_tags = {}
-                for future in concurrent.futures.as_completed(fetch_tasks):
-                    c_id = fetch_tasks[future]
-                    proj_id, repo_id, tags = future.result()
-                    repo_tags[c_id] = (proj_id, repo_id, tags)
-            
-            detail_tasks = {}
-            tag_results = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-                for c_id, (proj_id, repo_id, tags) in repo_tags.items():
-                    tag_results[c_id] = []
-                    for t in tags:
-                        tag_name = t.get('name')
-                        if tag_name:
-                            future = executor.submit(fetch_tag_detail, proj_id, repo_id, tag_name)
-                            detail_tasks[future] = c_id
-                            
-                for future in concurrent.futures.as_completed(detail_tasks):
-                    c_id = detail_tasks[future]
-                    tag_results[c_id].append(future.result())
-            
-            result = []
-            for p in projects:
-                proj_id = p.get('id', '').split('/')[-1]
-                active_branches, active_git_tags = project_git_infos.get(proj_id, ({}, {}))
-                
-                proj_info = {
-                    "name": p.get("name"),
-                    "fullPath": p.get("fullPath"),
-                    "branches": [
-                        {"name": b, "author": active_branches.get(b, "Unknown")}
-                        for b in (p.get("repository", {}).get("branchNames", []) if p.get("repository") else [])
-                    ],
-                    "containers": []
-                }
-                
-                containers = p.get("containerRepositories", {}).get("nodes", []) if p.get("containerRepositories") else []
-                for c in containers:
-                    c_name = c.get("name", "")
-                    c_id = c.get("id")
-                    
-                    tags = tag_results.get(c_id, [])
-                    try:
-                        tags = sorted(tags, key=lambda x: x.get('created_at', ''), reverse=True)
-                    except Exception:
-                        pass
-                        
-                    enriched_tags = []
-                    for t in tags:
-                        t_name = t.get("name")
-                        source_branch = "N/A"
-                        author = "Unknown"
-                        branch_exists = False
-                        is_git_tag = False
-                        
-                        # 1. Direct branch match
-                        for b_name, b_author in active_branches.items():
-                            if t_name == b_name or t_name == b_name.replace('/', '-'):
-                                source_branch = b_name
-                                author = b_author
-                                branch_exists = True
-                                break
-                                
-                        # 2. Direct git tag match
-                        if not branch_exists:
-                            for gt_name, gt_author in active_git_tags.items():
-                                if t_name == gt_name or t_name == gt_name.replace('/', '-'):
-                                    is_git_tag = True
-                                    author = gt_author
-                                    break
-                                    
-                        # 3. Match via audit log
-                        full_path = p.get("fullPath")
-                        if full_path in audit_mapping and t_name in audit_mapping[full_path]:
-                            audit_source = audit_mapping[full_path][t_name]
-                            source_branch = audit_source
-                            if audit_source in active_branches:
-                                branch_exists = True
-                                author = active_branches[audit_source]
-                                
-                        enriched_tags.append({
-                            "name": t_name, 
-                            "created_at": t.get("created_at"),
-                            "source_branch": source_branch,
-                            "branch_exists": branch_exists,
-                            "is_git_tag": is_git_tag,
-                            "author": author
-                        })
-                        
-                    proj_info["containers"].append({
-                        "name": c_name,
-                        "tags": enriched_tags
-                    })
-                    
-                result.append(proj_info)
-                
-            return json.dumps({"projects": result})
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch git inventory: {e}")
-            raise RuntimeError(f"Failed to fetch git inventory: {e}")
-
-    def fetch_container_tags(self, path, repository_id=None):
-        """Fetches the available container registry tags for a project or group."""
-        token = self.token
-        try:
-            import json
-            gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
-            
-            all_tags = []
-            
-            try:
-                group = gl.groups.get(path)
-                projects = group.projects.list(include_subgroups=True, all=True)
-            except Exception:
-                projects = []
-                
-            if projects:
-                for p in projects:
-                    try:
-                        project = gl.projects.get(p.id)
-                        
-                        try:
-                            active_branches = {b.name.replace('/', '-'): b.commit['author_name'] for b in project.branches.list(get_all=True)}
-                        except Exception:
-                            active_branches = {}
-                            
-                        try:
-                            active_git_tags = {gt.name.replace('/', '-'): gt.commit['author_name'] for gt in project.tags.list(get_all=True)}
-                        except Exception:
-                            active_git_tags = {}
-                            
-                        repos = project.repositories.list()
-                        for r in repos:
-                            tags = r.tags.list(get_all=True)
-                            for t in tags:
-                                try:
-                                    full_tag = r.tags.get(id=t.name)
-                                    created_at = full_tag.attributes.get('created_at', 'unknown')
-                                except Exception:
-                                    created_at = 'unknown'
-                                    
-                                author = active_branches.get(t.name) or active_git_tags.get(t.name) or 'Unknown'
-                                    
-                                distinguished_path = f"{project.path_with_namespace}/{r.name}" if r.name else project.path_with_namespace
-                                all_tags.append({
-                                    "name": t.name,
-                                    "path": f"{distinguished_path}:{t.name}",
-                                    "project": project.path_with_namespace,
-                                    "branch_exists": t.name in active_branches,
-                                    "is_git_tag": t.name in active_git_tags,
-                                    "author": author,
-                                    "created_at": created_at
-                                })
-                    except Exception as e:
-                        logger.error(f"Skipping or failed to fetch tags for project {p.id}: {e}")
-            else:
-                project = gl.projects.get(path)
-                
-                try:
-                    active_branches = {b.name.replace('/', '-'): b.commit['author_name'] for b in project.branches.list(get_all=True)}
-                except Exception:
-                    active_branches = {}
-                    
-                try:
-                    active_git_tags = {gt.name.replace('/', '-'): gt.commit['author_name'] for gt in project.tags.list(get_all=True)}
-                except Exception:
-                    active_git_tags = {}
-                    
-                repos = project.repositories.list()
-                if not repos:
-                    return "[]"
-                    
-                repo = repos[0] if not repository_id else project.repositories.get(repository_id)
-                tags = repo.tags.list(get_all=True)
-                for t in tags:
-                    try:
-                        full_tag = repo.tags.get(id=t.name)
-                        created_at = full_tag.attributes.get('created_at', 'unknown')
-                    except Exception:
-                        created_at = 'unknown'
-                        
-                    author = active_branches.get(t.name) or active_git_tags.get(t.name) or 'Unknown'
-                        
-                    all_tags.append({
-                        "name": t.name,
-                        "path": t.path,
-                        "project": project.path_with_namespace,
-                        "branch_exists": t.name in active_branches,
-                        "is_git_tag": t.name in active_git_tags,
-                        "author": author,
-                        "created_at": created_at
-                    })
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to fetch container tags via API: {e}")
-            
-        return json.dumps(all_tags)
-
     def sync_group_cache(self, default_branch='dev'):
-        """Syncs all repositories in the group to the local cache path."""
-        token = self.config['bot_token']
-        project_path = self.config['project_path']
-        local_path = self.config['local_clone_path']
+        token = self.config.get('bot_token')
+        project_path = self.config.get('project_path')
+        local_path = self.config.get('local_clone_path')
         
         domain = self.url.replace('https://', '').replace('http://', '')
         
@@ -483,13 +157,12 @@ class GitlabManager:
         return "\n".join(logs)
         
     def list_group_cache(self):
-        """Lists locally cloned repositories and their branches."""
         local_path = self.config.get('local_clone_path')
         if not local_path or not os.path.exists(local_path):
             return "Cache directory does not exist. Run sync first."
             
-        token = self.config['bot_token']
-        project_path = self.config['project_path']
+        token = self.config.get('bot_token')
+        project_path = self.config.get('project_path')
         domain = self.url.replace('https://', '').replace('http://', '')
         gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
         group = gl.groups.get(project_path)
@@ -530,12 +203,11 @@ class GitlabManager:
         return json.dumps(output)
 
     def checkout_project_branch(self, project_name, branch_name):
-        """Checks out a specific branch for a project in the local cache."""
         local_path = self.config.get('local_clone_path')
         if not local_path:
             raise RuntimeError("local_clone_path is not defined in configuration.")
             
-        project_path = self.config['project_path']
+        project_path = self.config.get('project_path')
         rel_path = project_name
         if rel_path.startswith(project_path + "/"):
             rel_path = rel_path[len(project_path) + 1:]
@@ -555,7 +227,6 @@ class GitlabManager:
         return f"Successfully checked out and pulled '{branch_name}' for '{project_name}'\n{pull_result.stdout.strip()}"
 
     def push_group_cache(self, commit_msg):
-        """Commits and pushes all changes in all local repos."""
         local_path = self.config.get('local_clone_path')
         if not local_path or not os.path.exists(local_path):
             raise RuntimeError("Cache directory does not exist. Run sync first.")
@@ -595,7 +266,6 @@ class GitlabManager:
         return "\n".join(logs)
 
     def commit_file_api(self, project_path, file_path, branch, content, commit_msg):
-        """Commits a single file directly via the GitLab API."""
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         project = gl.projects.get(project_path)
         
@@ -621,275 +291,20 @@ class GitlabManager:
                 raise e
         return f"Successfully committed {file_path} to {branch} via API."
 
-    def create_and_merge_mr(self, project_path, source_branch, target_branch, commit_message, keep_branch=False, assignee_id=None):
-        """Creates an MR and attempts to merge it."""
-        try:
-            import gitlab
-            gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
-            project = gl.projects.get(project_path)
-            
-            mrs = project.mergerequests.list(source_branch=source_branch, target_branch=target_branch, state='opened')
-            if mrs:
-                mr = mrs[0]
-            else:
-                mr_payload = {
-                    'source_branch': source_branch,
-                    'target_branch': target_branch,
-                    'title': f"HAU Auto-Release: {source_branch} -> {target_branch}",
-                    'description': commit_message
-                }
-                if assignee_id:
-                    mr_payload['assignee_ids'] = [assignee_id]
-                mr = project.mergerequests.create(mr_payload)
-            
-            import time
-            
-            active_pipeline = False
-            for _ in range(20):
-                mr = project.mergerequests.get(mr.iid)
-                mr_pipelines = mr.pipelines.list()
-                
-                if mr_pipelines and mr_pipelines[0].status in ['running', 'pending', 'created']:
-                    active_pipeline = True
-                    
-                if mr.detailed_merge_status != "checking":
-                    if mr.detailed_merge_status == "mergeable":
-                        break
-                    if mr.detailed_merge_status == "ci_still_running" or mr.detailed_merge_status == "ci_must_pass":
-                        if active_pipeline:
-                            break
-                            
-                time.sleep(1)
-                
-            remove_source = not keep_branch
-            merge_msg = f"{commit_message}\n\n[skip ci]"
-            
-            try:
-                if mr.detailed_merge_status == "mergeable" and not active_pipeline:
-                    mr.merge(merge_commit_message=merge_msg, should_remove_source_branch=remove_source)
-                else:
-                    mr.merge(merge_commit_message=merge_msg, should_remove_source_branch=remove_source, merge_when_pipeline_succeeds=True)
-            except gitlab.exceptions.GitlabError as e:
-                mr = project.mergerequests.get(mr.iid)
-                status = mr.detailed_merge_status
-                if status == "conflict":
-                    return False, mr.iid, f"Merge conflicts exist. Please resolve them on GitLab."
-                return False, mr.iid, f"GitLab rejected merge (405). Detailed MR Status: '{status}'. Raw Error: {str(e)}"
-                
-            return True, mr.iid, f"Successfully queued merge for '{source_branch}' into '{target_branch}'."
-            
-        except Exception as e:
-            return False, None, f"{str(e)}"
-
-    def monitor_pipeline(self, project_path, ref=None, mr_iid=None, pipeline_id=None, debug=False):
+    def delete_branch(self, project_path, branch_name):
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
-        project = gl.projects.get(project_path)
-        
-        import time
-        from datetime import datetime, timezone, timedelta
-        
-        pipeline = None
-        if pipeline_id:
-            pipeline = project.pipelines.get(pipeline_id)
-        else:
-            for _ in range(15):
-                if mr_iid:
-                    mr = project.mergerequests.get(mr_iid)
-                    pipelines = mr.pipelines.list()
-                    if pipelines:
-                        latest_pipeline = pipelines[0]
-                        created_at = datetime.fromisoformat(latest_pipeline.created_at.replace('Z', '+00:00'))
-                        if (datetime.now(timezone.utc) - created_at) < timedelta(seconds=30) or latest_pipeline.status in ['running', 'pending', 'created']:
-                            pipeline = project.pipelines.get(latest_pipeline.id)
-                            break
-                elif ref:
-                    pipelines = project.pipelines.list(ref=ref, order_by='id', sort='desc')
-                    if pipelines:
-                        latest_pipeline = pipelines[0]
-                        created_at = datetime.fromisoformat(latest_pipeline.created_at.replace('Z', '+00:00'))
-                        if (datetime.now(timezone.utc) - created_at) < timedelta(seconds=30) or latest_pipeline.status in ['running', 'pending', 'created']:
-                            pipeline = project.pipelines.get(latest_pipeline.id)
-                            break
-            time.sleep(1)
-            
-        if not pipeline:
-            yield "No active pipeline found after 15 seconds."
-            return
-            
-        yield f"Monitoring Pipeline #{pipeline.id} on '{pipeline.ref}' (Web: {pipeline.web_url})..."
-        
-        job_states = {}
-        job_trace_offsets = {}
-        job_start_times = {}
-        telemetry = {"jobs": [], "footprint_mb": None}
-        
-        while pipeline.status in ['running', 'pending', 'created', 'waiting_for_resource', 'preparing']:
-            jobs = pipeline.jobs.list(all=True)
-            active_jobs = 0
-            for job in jobs:
-                prev_status = job_states.get(job.name)
-                
-                if job.status == 'running' and prev_status != 'running':
-                    job_start_times[job.name] = time.time()
-                
-                is_terminal_transition = (job.status in ['success', 'failed', 'canceled'] and prev_status not in ['success', 'failed', 'canceled'])
-                is_slow_running = (job.status == 'running' and time.time() - job_start_times.get(job.name, time.time()) > 5)
-                
-                if debug and (is_slow_running or is_terminal_transition):
-                    try:
-                        p_job = project.jobs.get(job.id)
-                        trace_bytes = p_job.trace()
-                        if trace_bytes:
-                            trace_str = trace_bytes.decode('utf-8', errors='replace')
-                            lines = trace_str.split('\n')
-                            last_offset = job_trace_offsets.get(job.name, 0)
-                            if len(lines) > last_offset:
-                                for line in lines[last_offset:]:
-                                    if line.strip():
-                                        yield f"      [{job.name}] {line.strip()}"
-                                job_trace_offsets[job.name] = len(lines)
-                    except Exception:
-                        pass
-                
-                if prev_status != job.status:
-                    if job.status == 'success':
-                        duration_val = getattr(job, 'duration', None)
-                        if duration_val is not None:
-                            duration = float(duration_val)
-                        else:
-                            duration = time.time() - job_start_times.get(job.name, time.time())
-                        yield f"  ✅ Job '{job.name}' (Stage: {job.stage}) completed successfully in {duration:.1f}s."
-                    elif job.status == 'failed':
-                        yield f"  ❌ Job '{job.name}' (Stage: {job.stage}) failed."
-                        try:
-                            p_job = project.jobs.get(job.id)
-                            trace_bytes = p_job.trace()
-                            if trace_bytes:
-                                trace_str = trace_bytes.decode('utf-8', errors='replace')
-                                lines = trace_str.split('\n')
-                                yield f"    --- Last 50 lines of trace for {job.name} ---"
-                                for line in lines[-50:]:
-                                    if line.strip():
-                                        yield f"      {line.strip()}"
-                                yield f"    ----------------------------------------"
-                        except Exception as e:
-                            yield f"      (Could not fetch trace: {e})"
-                    elif job.status == 'running':
-                        yield f"  ▶️ Job '{job.name}' (Stage: {job.stage}) is now RUNNING..."
-                    job_states[job.name] = job.status
-                    
-                if job.status in ['running', 'pending']:
-                    active_jobs += 1
-                            
-            if active_jobs == 0 and not debug:
-                yield f"Pipeline Status: {pipeline.status.upper()} (Transitioning stages or finalizing...)"
-                
-            time.sleep(5)
-            pipeline = project.pipelines.get(pipeline.id)
-            
-        if pipeline.status == 'success':
-            yield f"Pipeline #{pipeline.id} completed successfully! ✅"
-            jobs = pipeline.jobs.list(all=True)
-            for job in jobs:
-                if job.status == 'failed':
-                    yield f"  ⚠️ Note: Job '{job.name}' (Stage: {job.stage}) failed but was allowed to fail. (Web: {job.web_url})"
-                    try:
-                        p_job = project.jobs.get(job.id)
-                        trace_bytes = p_job.trace()
-                        if trace_bytes:
-                            trace_str = trace_bytes.decode('utf-8', errors='replace')
-                            lines = trace_str.split('\n')
-                            yield f"    --- Last 50 lines of trace for {job.name} ---"
-                            for line in lines[-50:]:
-                                if line.strip():
-                                    yield f"      {line.strip()}"
-                            yield f"    ----------------------------------------"
-                    except Exception as e:
-                        yield f"      (Could not fetch trace: {e})"
-            
-            try:
-                repos = project.repositories.list()
-                if repos:
-                    tags = repos[0].tags.list(get_all=True)
-                    if tags:
-                        import re
-                        expected_tag_name = None
-                        if pipeline.ref.startswith('refs/merge-requests/'):
-                            try:
-                                mr_iid_from_ref = int(pipeline.ref.split('/')[2])
-                                mr_obj = project.mergerequests.get(mr_iid_from_ref)
-                                expected_tag_name = re.sub(r'[^a-z0-9]+', '-', mr_obj.source_branch.lower()).strip('-')[:63]
-                            except Exception:
-                                pass
-                        else:
-                            expected_tag_name = re.sub(r'[^a-z0-9]+', '-', pipeline.ref.lower()).strip('-')[:63]
-                            
-                        target_tag = None
-                        if expected_tag_name:
-                            for t in tags:
-                                if t.name == expected_tag_name:
-                                    target_tag = repos[0].tags.get(id=t.name)
-                                    break
-                                    
-                        if not target_tag:
-                            tags.sort(key=lambda t: getattr(t, 'created_at', ''), reverse=True)
-                            target_tag = repos[0].tags.get(id=tags[0].name)
-                            
-                        total_size_bytes = target_tag.attributes.get('total_size', 0)
-                        if total_size_bytes:
-                            size_mb = total_size_bytes / (1024 * 1024)
-                            telemetry["footprint_mb"] = round(size_mb, 2)
-                            yield f"  📦 Container '{target_tag.name}' footprint: {size_mb:.2f} MB"
-            except Exception as e:
-                yield f"  (Could not fetch container size: {e})"
-                
-            for job in jobs:
-                telemetry["jobs"].append({
-                    "id": job.id,
-                    "name": job.name,
-                    "stage": job.stage,
-                    "status": job.status,
-                    "duration": job.duration,
-                    "web_url": job.web_url
-                })
-                
-            yield {"pipeline_success": True, "telemetry": telemetry}
-        else:
-            yield f"Pipeline #{pipeline.id} failed with status: {pipeline.status.upper()} ❌"
-            jobs = pipeline.jobs.list(all=True)
-            for job in jobs:
-                job_data = {
-                    "id": job.id,
-                    "name": job.name,
-                    "stage": job.stage,
-                    "status": job.status,
-                    "duration": job.duration,
-                    "web_url": job.web_url,
-                    "trace": None
-                }
-                if job.status == 'failed':
-                    yield f"  - Failed Job: {job.name} (Stage: {job.stage}) (Web: {job.web_url})"
-                    try:
-                        p_job = project.jobs.get(job.id)
-                        trace_bytes = p_job.trace()
-                        if trace_bytes:
-                            trace_str = trace_bytes.decode('utf-8', errors='replace')
-                            lines = trace_str.split('\n')
-                            trace_lines = [line.strip() for line in lines[-100:] if line.strip()]
-                            job_data["trace"] = trace_lines
-                            
-                            yield f"    --- Last {len(trace_lines)} lines of trace for {job.name} ---"
-                            for line in trace_lines[-50:]:
-                                yield f"      {line}"
-                            yield f"    ----------------------------------------"
-                    except Exception as e:
-                        yield f"      (Could not fetch trace: {e})"
-                telemetry["jobs"].append(job_data)
-                
-            yield {"pipeline_success": False, "pipeline_id": pipeline.id, "telemetry": telemetry}
+        try:
+            project = gl.projects.get(project_path)
+            project.branches.delete(branch_name)
+            return True, f"Successfully deleted branch '{branch_name}'."
+        except gitlab.exceptions.GitlabDeleteError as e:
+            if e.response_code == 404:
+                return True, f"Branch '{branch_name}' does not exist (or already deleted)."
+            return False, f"Failed to delete branch '{branch_name}': {e}"
+        except Exception as e:
+            return False, f"Failed to delete branch '{branch_name}': {e}"
 
     def create_tag(self, project_path, tag_name, ref):
-        """Creates a Git tag via the API."""
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         project = gl.projects.get(project_path)
         
@@ -899,64 +314,23 @@ class GitlabManager:
         except Exception as e:
             return False, f"Failed to create tag: {str(e)}"
 
-    def retag_container(self, project_path, old_tag, new_tag):
-        """Retags a container image in the GitLab Container Registry using the Docker V2 API."""
-        import requests
-        import time
+    def create_release(self, project_path, tag_name, description):
+        gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
+        project = gl.projects.get(project_path)
         
-        auth_url = f"{self.url.rstrip('/')}/jwt/auth"
-        service = "container_registry"
-        scope = f"repository:{project_path}:pull,push"
-        
-        token_res = requests.get(
-            auth_url,
-            params={"service": service, "scope": scope},
-            auth=("__token__", self.token),
-            verify=False
-        )
-        if token_res.status_code != 200:
-            return False, f"Failed to authenticate with registry: {token_res.text}"
-            
-        token = token_res.json().get("token")
-        
-        from urllib.parse import urlparse
-        parsed_url = urlparse(self.url)
-        registry_url = f"https://{parsed_url.netloc}:4567"
-        
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json"
-        }
-        
-        manifest_url = f"{registry_url}/v2/{project_path.lower()}/manifests/{old_tag}"
-        res = None
-        for attempt in range(12):
-            res = requests.get(manifest_url, headers=headers, verify=False)
-            if res.status_code == 200:
-                break
-            time.sleep(5)
-        else:
-            return False, f"Failed to get manifest for {old_tag}: {res.status_code if res else 'Unknown'} - {res.text if res else 'Timeout'}"
-            
-        manifest = res.text
-        content_type = res.headers.get("Content-Type")
-        
-        put_headers = headers.copy()
-        put_headers["Content-Type"] = content_type
-        
-        put_url = f"{registry_url}/v2/{project_path.lower()}/manifests/{new_tag}"
-        put_res = requests.put(put_url, headers=put_headers, data=manifest, verify=False)
-        
-        if put_res.status_code in [201, 202]:
-            return True, f"Successfully retagged container image '{old_tag}' to '{new_tag}'"
-        else:
-            return False, f"Failed to push new tag {new_tag}: {put_res.status_code} - {put_res.text}"
+        try:
+            release = project.releases.create({
+                'name': f'Release {tag_name}',
+                'tag_name': tag_name,
+                'description': description
+            })
+            return True, f"Successfully created GitLab Release for {tag_name}."
+        except Exception as e:
+            return False, f"Failed to create GitLab Release: {str(e)}"
 
     def resolve_user(self, project_path, search_str):
-        """Resolves a user from the project's members based on search string, returns dict with formatted name."""
         token = self.token
         try:
-            import urllib.parse
             gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
             project = gl.projects.get(project_path)
             
@@ -964,10 +338,15 @@ class GitlabManager:
             search_lower = search_str.lower()
             matched_member = None
             
+            search_normalized = search_lower.replace('.', ' ')
             for m in members:
                 username = getattr(m, 'username', '').lower()
                 name = getattr(m, 'name', '').lower()
-                if search_lower in username or search_lower in name:
+                
+                name_normalized = name.replace('.', ' ')
+                username_normalized = username.replace('.', ' ')
+                
+                if search_normalized in username_normalized or search_normalized in name_normalized:
                     matched_member = m
                     break
                     

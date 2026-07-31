@@ -8,15 +8,18 @@ def git_cli():
     pass
 
 @git_cli.command(name='sync-inventory')
+@click.option("--project", "-p", default=None, help="Filter sync by specific project name")
 @click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
 @handle_grpc_errors
 @click.pass_context
-def git_sync_inventory(ctx, as_grpc):
+def git_sync_inventory(ctx, project, as_grpc):
     """Synchronizes Git inventory, branches, and container tags into the database."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
-    req = hau_pb2.GitInventorySyncRequest()
-    click.echo("Starting Git Inventory Sync. This may take a moment to fetch and upsert...")
+    req = hau_pb2.GitInventorySyncRequest(project_name=project or "")
+    
+    target_str = f" for '{project}'" if project else ""
+    click.echo(f"Starting Git Inventory Sync{target_str}. This may take a moment to fetch and upsert...")
     resp = stub.GitInventorySync(req)
     
     if as_grpc:
@@ -136,8 +139,10 @@ def git_inventory(ctx, as_grpc, project):
                     extra = f" (Branch: {c['branch']})"
                 if 'source_feature' in c and c['source_feature'] != "Unknown":
                     extra = f" (Feature: {c['source_feature']})"
+                    
+                native_rel_str = click.style(" [📜 Release Notes]", fg='magenta', bold=True) if c.get('has_native_release') else ""
                 
-                click.echo(f"      - {label}{tag_name}{extra}{active_str} | Created: {created} | Author: {author}")
+                click.echo(f"      - {label}{tag_name}{extra}{active_str}{native_rel_str} | Created: {created} | Author: {author}")
                 
             if inv.get('releases'):
                 click.secho(f"   🚀 Releases:", fg='green')
@@ -275,8 +280,9 @@ def git_checkout(ctx, project, branch, as_grpc):
 @click.option('--delete-branch', is_flag=True, help="Delete the feature branch after merging (default is to keep it)")
 @click.option('--debug', is_flag=True, help="Stream detailed job trace logs from the pipeline")
 @click.option('--author', type=str, help="Override author (will resolve to GitLab user)")
+@click.option('--dry-run', is_flag=True, help="Simulate the release process without modifying GitLab or pushing commits.")
 @click.pass_context
-def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug, author):
+def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug, author, dry_run):
     """Executes a GitOps merge and release (with pipeline monitoring and tagging)."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
@@ -288,10 +294,12 @@ def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug,
         skip_changelog_generation=skip_changelog,
         keep_branch=not delete_branch,
         debug=debug,
-        author=author or ""
+        author=author or "",
+        dry_run=dry_run
     )
     
-    click.echo(f"Initiating release pipeline for {repo} ({source} -> {target})...")
+    mode_str = "[DRY-RUN] " if dry_run else ""
+    click.echo(f"{mode_str}Initiating release pipeline for {repo} ({source} -> {target})...")
     
     try:
         responses = stub.GitRelease(req)
@@ -314,8 +322,9 @@ def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug,
 @click.option('--merge', type=int, help="ID of the Merge Request to retry")
 @click.option('--skip-warnings', is_flag=True, help="Skip retrying if the pipeline is already successful (ignore warnings)")
 @click.option('--debug', is_flag=True, help="Stream detailed job trace logs from the pipeline")
+@click.option('--author', type=str, help="Override author (will resolve to GitLab user)")
 @click.pass_context
-def git_retry(ctx, repo, pipeline, merge, skip_warnings, debug):
+def git_retry(ctx, repo, pipeline, merge, skip_warnings, debug, author):
     """Retries a failed GitLab pipeline or Merge Request and streams its progress."""
     if not pipeline and not merge:
         click.secho("❌ You must provide either --pipeline or --merge", fg="red")
@@ -332,7 +341,8 @@ def git_retry(ctx, repo, pipeline, merge, skip_warnings, debug):
         pipeline_id=pipeline or 0,
         merge_id=merge or 0,
         skip_warnings=skip_warnings,
-        debug=debug
+        debug=debug,
+        author=author or ""
     )
     
     if merge:
@@ -394,8 +404,10 @@ def git_audit(ctx, id, repo, as_grpc):
             for rec in records:
                 click.echo(f"Timestamp:   {rec.get('timestamp')}")
                 click.echo(f"Project:     {rec.get('project_name')}")
+                click.echo(f"Actor:       {rec.get('actor', 'N/A')}")
                 click.echo(f"Source:      {rec.get('source_branch', 'N/A')}")
                 click.echo(f"Target:      {rec.get('target_branch', 'N/A')}")
+                click.echo(f"MR ID:       !{rec.get('merge_request_id', 'N/A')}")
                 click.echo(f"Version:     {rec.get('version_tag')}")
                 click.echo(f"Action:      {rec.get('action')}")
                 status_color = 'green' if rec.get('status') == 'SUCCESS' else 'red' if rec.get('status') == 'FAILED' else 'yellow'
@@ -428,12 +440,75 @@ def git_audit(ctx, id, repo, as_grpc):
                             for tline in j.get('trace', [])[-15:]:
                                 click.secho(f"      {tline}", fg='red', dim=True)
         else:
-            click.secho(f"{'ID':<8} | {'Project':<38} | {'Version':<12} | {'Action':<13} | {'Status':<10} | {'Method':<20} | {'Date'}", fg='cyan', bold=True)
-            click.secho("-" * 135, fg='cyan')
+            click.secho(f"{'ID':<8} | {'Project':<35} | {'Version':<11} | {'MR':<5} | {'Action':<11} | {'Actor':<15} | {'Path (Src->Tgt)':<25} | {'Status':<10} | {'Method':<18} | {'Date'}", fg='cyan', bold=True)
+            click.secho("-" * 175, fg='cyan')
             for rec in records:
                 status_color = 'green' if rec['status'] == 'SUCCESS' else 'red' if rec['status'] == 'FAILED' else 'yellow'
                 status_str = click.style(f"{rec['status']:<10}", fg=status_color)
                 short_id = str(rec['id'])[:8]
-                click.echo(f"{short_id:<8} | {rec['project_name']:<38} | {str(rec['version_tag'] or 'N/A'):<12} | {rec['action']:<13} | {status_str} | {str(rec['changelog_generation_method'] or 'N/A'):<20} | {rec['timestamp']}")
+                proj_name = rec['project_name'][:35]
+                ver = str(rec['version_tag'] or 'N/A')[:11]
+                mr_id = str(rec.get('merge_request_id') or 'N/A')[:5]
+                act = str(rec['action'])[:11]
+                actor = str(rec.get('actor') or 'gia-ai')[:15]
+                
+                src = rec.get('source_branch') or 'N/A'
+                tgt = rec.get('target_branch') or 'N/A'
+                path_str = f"{src} -> {tgt}"
+                if len(path_str) > 25:
+                    path_str = path_str[:22] + "..."
+                    
+                method = str(rec.get('changelog_generation_method') or 'N/A')[:18]
+                
+                click.echo(f"{short_id:<8} | {proj_name:<35} | {ver:<11} | {mr_id:<5} | {act:<11} | {actor:<15} | {path_str:<25} | {status_str} | {method:<18} | {rec['timestamp']}")
     except Exception as e:
         click.secho(f"Failed to parse audit logs: {e}", fg="red")
+
+@git_cli.command(name='delete')
+@click.option('--project', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
+@click.option('--branch', help="Name of the branch to delete")
+@click.option('--container', help="Tag of the container to delete")
+@click.option('-y', '--yes', is_flag=True, help="Skip confirmation prompt")
+@click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
+@handle_grpc_errors
+@click.pass_context
+def git_delete(ctx, project, branch, container, yes, as_grpc):
+    """Deletes a feature branch and/or container tag safely."""
+    if not branch and not container:
+        click.secho("❌ You must specify at least one of --branch or --container.", fg="red")
+        return
+        
+    if not yes:
+        targets = []
+        if branch and not container:
+            targets.append(f"branch '{branch}' AND its associated container tag")
+        else:
+            if branch: targets.append(f"branch '{branch}'")
+            if container: targets.append(f"container '{container}'")
+        target_str = " and ".join(targets)
+        click.confirm(f"Are you sure you want to delete {target_str} in '{project}'?", abort=True)
+        
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    
+    req = hau_pb2.GitDeleteRequest(
+        project_name=project,
+        branch_name=branch or "",
+        container_tag=container or ""
+    )
+    
+    click.echo("Initiating deletion... (Syncing inventory first, this may take a moment)")
+    
+    resp = stub.GitDelete(req)
+    
+    if as_grpc:
+        print_grpc_json(resp)
+        return
+        
+    if not resp.success:
+        click.secho(f"❌ Deletion Failed:\n{resp.message}", fg="red")
+    else:
+        if "does not exist" in resp.message:
+            click.secho(f"⚠️ Deletion Finished with Warnings:\n{resp.message}", fg="yellow")
+        else:
+            click.secho(f"✅ Deletion Success:\n{resp.message}", fg="green")

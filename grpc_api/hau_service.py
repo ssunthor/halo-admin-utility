@@ -29,21 +29,49 @@ def handle_rpc(response_class):
         @functools.wraps(func)
         def wrapper(self, request, context):
             client_id = extract_client_id(context)
-            logger.info(f"[{client_id}] RPC '{func.__name__}' invoked.")
+            
+            target = ""
+            if getattr(request, 'project_name', ""):
+                target = request.project_name
+            elif getattr(request, 'tenant_slug', ""):
+                target = request.tenant_slug
+            elif getattr(request, 'target', ""):
+                target = request.target
+            elif getattr(request, 'id', ""):
+                target = f"id:{request.id}"
+                
+            target_info = f" (target='{target}')" if target else ""
+            logger.info(f"[{client_id}] RPC '{func.__name__}' invoked{target_info}.")
             try:
                 res = func(self, request, context)
                 import inspect
                 if inspect.isgenerator(res):
                     def stream_wrapper():
                         try:
-                            yield from res
+                            has_error = False
+                            for item in res:
+                                if hasattr(item, 'success') and not item.success:
+                                    logger.error(f"[{client_id}] RPC '{func.__name__}' yielded failure{target_info}: {getattr(item, 'message', 'Unknown error')}")
+                                    has_error = True
+                                yield item
+                            if not has_error:
+                                logger.info(f"[{client_id}] RPC '{func.__name__}' stream completed successfully{target_info}.")
                         except Exception as e:
-                            logger.error(f"[{client_id}] RPC '{func.__name__}' streaming failed: {e}")
+                            logger.error(f"[{client_id}] RPC '{func.__name__}' streaming failed{target_info}: {e}")
                             yield response_class(success=False, message=str(e))
                     return stream_wrapper()
+                
+                if hasattr(res, 'success'):
+                    if res.success:
+                        logger.info(f"[{client_id}] RPC '{func.__name__}' completed successfully{target_info}.")
+                    else:
+                        logger.error(f"[{client_id}] RPC '{func.__name__}' failed{target_info}: {getattr(res, 'message', 'Unknown error')}")
+                else:
+                    logger.info(f"[{client_id}] RPC '{func.__name__}' completed successfully{target_info}.")
+                    
                 return res
             except Exception as e:
-                logger.error(f"[{client_id}] RPC '{func.__name__}' failed: {e}")
+                logger.error(f"[{client_id}] RPC '{func.__name__}' failed{target_info}: {e}")
                 return response_class(success=False, message=str(e))
         return wrapper
     return decorator
@@ -157,74 +185,34 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
 
     @handle_rpc(hau_pb2.SetTenantInternalResponse)
     def SetTenantInternal(self, request, context):
-        from core.database.models import HaloTenant
         with self._get_db_session(write=True) as session:
             if not session:
                 return hau_pb2.SetTenantInternalResponse(success=False, message="Database configuration is missing.")
             
-            tenant = session.query(HaloTenant).filter_by(slug_name=request.tenant_slug).first()
-            if not tenant:
-                return hau_pb2.SetTenantInternalResponse(success=False, message=f"Tenant '{request.tenant_slug}' not found.")
-            
-            tenant.is_internal = request.is_internal
-            tenant.is_internal_overridden = True
-            
-            return hau_pb2.SetTenantInternalResponse(success=True, message=f"Successfully set {request.tenant_slug} is_internal={request.is_internal}")
+            sql_writer = SQLWriter(session)
+            success, message = sql_writer.set_tenant_internal_flag(request.tenant_slug, request.is_internal)
+            return hau_pb2.SetTenantInternalResponse(success=success, message=message)
 
     @handle_rpc(hau_pb2.GenerateChangelogResponse)
     def GenerateChangelog(self, request, context):
         if not self.gitlab_manager:
             return hau_pb2.GenerateChangelogResponse(success=False, message="GitlabManager is not initialized.", changelog_yaml="")
             
-        project_name = request.project_name
-        branch_name = request.branch_name
-        
-        checkout_res = self.gitlab_manager.checkout_project_branch(project_name, branch_name)
+        checkout_res = self.gitlab_manager.checkout_project_branch(request.project_name, request.branch_name)
         if "Failed" in checkout_res:
             return hau_pb2.GenerateChangelogResponse(success=False, message=checkout_res, changelog_yaml="")
             
         local_base = self.config['external_services']['gitlab']['local_clone_path']
         project_path = self.config['external_services']['gitlab']['project_path']
-        rel_path = project_name
+        rel_path = request.project_name
         if rel_path.startswith(project_path + "/"):
             rel_path = rel_path[len(project_path) + 1:]
             
         repo_local_path = os.path.join(local_base, rel_path)
         
         try:
-            date_res = subprocess.run(
-                ['git', 'log', '-1', '--format=%ad', '--date=short', 'HEAD'], 
-                cwd=repo_local_path, capture_output=True, text=True
-            )
-            merge_date = date_res.stdout.strip() if date_res.returncode == 0 else "UNKNOWN"
-            
-            author_res = subprocess.run(
-                ['git', 'log', '-1', '--format=%an', 'HEAD'], 
-                cwd=repo_local_path, capture_output=True, text=True
-            )
-            merge_author = author_res.stdout.strip() if author_res.returncode == 0 else "UNKNOWN"
-            
-            if merge_author == "Gemini Agent":
-                merge_author = "Scott Chrestman"
-            if merge_author.endswith(" ADM"):
-                merge_author = merge_author[:-4]
-            elif merge_author.endswith(" PRV"):
-                merge_author = merge_author[:-4]
-
             orchestrator = ChangelogOrchestrator(config=self.config)
-            generator = orchestrator.generate_for_commits(
-                repo_local_path=repo_local_path,
-                start_commit='HEAD^1',
-                end_commit='HEAD',
-                author=merge_author,
-                date_str=merge_date,
-                version="UNKNOWN"
-            )
-            
-            final_yaml = None
-            for item in generator:
-                if isinstance(item, dict) and "final_yaml" in item:
-                    final_yaml = item["final_yaml"]
+            final_yaml = orchestrator.generate_from_branch(repo_local_path, request.branch_name, request.project_name)
             
             if not final_yaml:
                 return hau_pb2.GenerateChangelogResponse(
@@ -315,7 +303,8 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 skip_changelog=request.skip_changelog_generation,
                 keep_branch=request.keep_branch,
                 debug=request.debug,
-                author=request.author
+                author=request.author,
+                dry_run=request.dry_run
             )
             for item in generator:
                 if isinstance(item, dict):
@@ -339,7 +328,8 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 pipeline_id=request.pipeline_id,
                 merge_id=request.merge_id,
                 skip_warnings=request.skip_warnings,
-                debug=request.debug
+                debug=request.debug,
+                author=request.author
             )
             for item in generator:
                 if isinstance(item, dict):
@@ -355,7 +345,6 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
 
     @handle_rpc(hau_pb2.GitAuditResponse)
     def GitAudit(self, request, context):
-
         try:
             with self._get_db_session(write=False) as session:
                 if not session:
@@ -379,8 +368,11 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
 
     @handle_rpc(hau_pb2.GitInventorySyncResponse)
     def GitInventorySync(self, request, context):
-        if not self.gitlab_manager:
-            return hau_pb2.GitInventorySyncResponse(success=False, message="GitlabManager is not initialized.")
+        from core.managers.git_inventory_manager import GitInventoryManager
+        inventory_manager = GitInventoryManager(self.config)
+        
+        if not inventory_manager.url or not inventory_manager.token:
+            return hau_pb2.GitInventorySyncResponse(success=False, message="GitLab configuration is missing.")
             
         try:
             audit_mapping = {}
@@ -394,11 +386,19 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                                 audit_mapping[log.project_name] = {}
                             audit_mapping[log.project_name][log.version_tag] = log.source_branch
 
-            # Fetch live from Gitlab
-            result_json = self.gitlab_manager.fetch_git_inventory_graphql(group_path="ai/halo", audit_mapping=audit_mapping)
+                    project_name = request.project_name if request.project_name else None
+                    if project_name:
+                        from core.database.models import GitProject
+                        proj_in_db = session.query(GitProject).filter(
+                            (GitProject.project_name == project_name) | 
+                            (GitProject.project_path == project_name) |
+                            (GitProject.project_path.like(f"%/{project_name}"))
+                        ).first()
+                        if proj_in_db:
+                            project_name = proj_in_db.project_path
+            result_json = inventory_manager.fetch_git_inventory_graphql(group_path="ai/halo", project_path=project_name, audit_mapping=audit_mapping)
             data = json.loads(result_json)
             
-            # Upsert to DB
             with self._get_db_session(write=True) as session:
                 if not session:
                     return hau_pb2.GitInventorySyncResponse(success=False, message="Database not available.")
@@ -449,33 +449,142 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
     def GetDocumentation(self, request, context):
         if not self.gitlab_manager:
             return hau_pb2.GetDocumentationResponse(success=False, message="GitlabManager not init.")
+            
         try:
-            import gitlab
-            gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
-            project_client = gl.projects.get("ai/halo/deployment")
-            
-            project_name = request.project_name
-            doc_path = f"docs/{project_name}"
-            
-            try:
-                tree = project_client.repository_tree(path=doc_path, ref='main')
-            except gitlab.exceptions.GitlabGetError as e:
-                if e.response_code == 404:
-                    normalized_project = project_name.lower().replace(" ", "-")
-                    doc_path = f"docs/{normalized_project}"
-                    tree = project_client.repository_tree(path=doc_path, ref='main')
-                else:
-                    raise e
-
-            docs = {}
-            for item in tree:
-                if item['type'] == 'blob' and item['name'].endswith('.md'):
-                    f = project_client.files.get(file_path=item['path'], ref='main')
-                    import base64
-                    docs[item['name']] = base64.b64decode(f.content).decode('utf-8')
-            
+            docs = self.gitlab_manager.fetch_documentation(request.project_name)
             doc_msgs = [hau_pb2.Document(filename=name, raw_markdown=content) for name, content in docs.items()]
             return hau_pb2.GetDocumentationResponse(success=True, message="Fetched docs", documents=doc_msgs)
         except Exception as e:
             logger.error(f"Failed to fetch documentation for {request.project_name}: {e}")
             return hau_pb2.GetDocumentationResponse(success=False, message=str(e))
+
+    @handle_rpc(hau_pb2.GitDeleteResponse)
+    def GitDelete(self, request, context):
+        if not self.gitlab_manager:
+            return hau_pb2.GitDeleteResponse(success=False, message="GitlabManager is not initialized.")
+        from core.managers.container_registry_manager import ContainerRegistryManager
+        registry_manager = ContainerRegistryManager(self.config)
+        
+        project_name = request.project_name
+        branch_name = getattr(request, 'branch_name', None)
+        container_tag = getattr(request, 'container_tag', None)
+        
+        if branch_name and not container_tag:
+            container_tag = branch_name.replace('/', '-')
+        
+        if not branch_name and not container_tag:
+            return hau_pb2.GitDeleteResponse(success=False, message="Must specify either branch_name or container_tag to delete.")
+            
+        with self._get_db_session(write=True) as session:
+            if not session:
+                return hau_pb2.GitDeleteResponse(success=False, message="Database not available.")
+            sql_writer = SQLWriter(session)
+            
+            logger.info("Syncing inventory before deletion checks...")
+            orchestrator = InventoryOrchestrator(self.config, sql_writer)
+            orchestrator.sync_inventory()
+            
+            from core.database.models import GitProject
+            projects = session.query(GitProject).filter(
+                (GitProject.project_path == project_name) | 
+                (GitProject.project_path.like(f"%/{project_name}")) |
+                (GitProject.project_name == project_name)
+            ).all()
+            
+            if not projects:
+                return hau_pb2.GitDeleteResponse(success=False, message=f"Project '{project_name}' not found in local inventory.")
+                
+            if len(projects) > 1:
+                matched_paths = [p.project_path for p in projects]
+                return hau_pb2.GitDeleteResponse(
+                    success=False, 
+                    message=f"Ambiguous project name '{project_name}'. Matched {len(projects)} projects: {', '.join(matched_paths)}. Please provide the full project path."
+                )
+                
+            full_project_path = projects[0].project_path
+            project_id = projects[0].id
+            
+            if branch_name:
+                from core.database.models import GitBranch
+                branch_in_db = session.query(GitBranch).filter_by(project_id=project_id, name=branch_name).first()
+                if not branch_in_db and '-' in branch_name:
+                    alt_name = branch_name.replace('-', '/', 1)
+                    alt_branch = session.query(GitBranch).filter_by(project_id=project_id, name=alt_name).first()
+                    if alt_branch:
+                        branch_name = alt_name
+            
+            if container_tag:
+                sql_reader = SQLReader(session)
+                active_counts = sql_reader.get_active_deployments_counts()
+                short_container_name = full_project_path.split('/')[-1]
+                short_image = f"{short_container_name}:{container_tag}"
+                
+                deploy_info = active_counts.get(short_image, {})
+                if deploy_info.get('count', 0) > 0:
+                    ns = ", ".join(deploy_info.get('namespaces', []))
+                    msg = f"SAFETY ABORT: Container '{short_image}' is actively deployed in namespaces: {ns}."
+                    
+                    log = sql_writer.create_git_release_audit_log(
+                        project_name=full_project_path,
+                        action="DELETE",
+                        actor=extract_client_id(context),
+                        status="FAILED",
+                        source_branch=branch_name,
+                        target_branch=None,
+                        merge_request_id=None
+                    )
+                    log.error_message = msg
+                    session.commit()
+                    return hau_pb2.GitDeleteResponse(success=False, message=msg)
+                
+                logger.info(f"Verified container '{short_image}' is not actively deployed. Proceeding with deletion.")
+                    
+        messages = []
+        overall_success = True
+        
+        if container_tag:
+            messages.append(f"Safety Check: Verified container '{short_image}' is inactive.")
+        
+        if branch_name:
+            success, msg = self.gitlab_manager.delete_branch(full_project_path, branch_name)
+            messages.append(f"Branch: {msg}")
+            if not success:
+                overall_success = False
+                
+        if container_tag:
+            success, msg = registry_manager.delete_container_tag(full_project_path, container_tag)
+            messages.append(f"Container: {msg}")
+            if not success:
+                overall_success = False
+                
+        final_msg = "\n".join(messages)
+        
+        with self._get_db_session(write=True) as session:
+            sql_writer = SQLWriter(session)
+            log = sql_writer.create_git_release_audit_log(
+                project_name=full_project_path,
+                action="DELETE",
+                actor=extract_client_id(context),
+                status="SUCCESS" if overall_success else "FAILED",
+                source_branch=branch_name,
+                target_branch=None,
+                merge_request_id=None
+            )
+            if not overall_success:
+                log.error_message = final_msg
+            session.commit()
+            
+        if overall_success:
+            try:
+                logger.info("Triggering post-delete Git Inventory Sync...")
+                sync_req = hau_pb2.GitInventorySyncRequest(project_name=request.project_name)
+                sync_resp = self.GitInventorySync(sync_req, context)
+                if sync_resp.success:
+                    final_msg += "\nInventory: Successfully synced post-deletion."
+                else:
+                    final_msg += f"\nInventory Sync Warning: {sync_resp.message}"
+            except Exception as e:
+                logger.error(f"Failed to trigger post-delete inventory sync: {e}")
+                final_msg += f"\nInventory Sync Warning: Failed to trigger sync ({e})"
+                
+        return hau_pb2.GitDeleteResponse(success=overall_success, message=final_msg)

@@ -299,3 +299,40 @@ class ChangelogOrchestrator:
         final_doc += "\n\n".join(changelog_entries)
         
         yield {"final_yaml": final_doc}
+
+    def generate_from_branch(self, repo_local_path: str, branch_name: str, project_name: str) -> str:
+        """Extracts git metadata and orchestrates the changelog generation for the current HEAD."""
+        date_res = subprocess.run(
+            ['git', 'log', '-1', '--format=%ad', '--date=short', 'HEAD'], 
+            cwd=repo_local_path, capture_output=True, text=True
+        )
+        merge_date = date_res.stdout.strip() if date_res.returncode == 0 else "UNKNOWN"
+        
+        author_res = subprocess.run(
+            ['git', 'log', '-1', '--format=%an', 'HEAD'], 
+            cwd=repo_local_path, capture_output=True, text=True
+        )
+        merge_author = author_res.stdout.strip() if author_res.returncode == 0 else "UNKNOWN"
+        
+        if merge_author == "Gemini Agent":
+            merge_author = "Scott Chrestman"
+        if merge_author.endswith(" ADM"):
+            merge_author = merge_author[:-4]
+        elif merge_author.endswith(" PRV"):
+            merge_author = merge_author[:-4]
+
+        generator = self.generate_for_commits(
+            repo_local_path=repo_local_path,
+            start_commit='HEAD^1',
+            end_commit='HEAD',
+            author=merge_author,
+            date_str=merge_date,
+            version="UNKNOWN"
+        )
+        
+        final_yaml = None
+        for item in generator:
+            if isinstance(item, dict) and "final_yaml" in item:
+                final_yaml = item["final_yaml"]
+                
+        return final_yaml

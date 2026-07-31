@@ -1,5 +1,10 @@
 import logging
+import datetime
 from sqlalchemy.orm import Session
+from core.database.models import (
+    TenantResourceInventory, DeploymentAuditLog, GitProject, 
+    GitBranch, GitContainer, ProjectType, HaloTenant, GitReleaseAuditLog
+)
 
 logger = logging.getLogger(__name__)
 
@@ -8,12 +13,9 @@ class SQLWriter:
         self.session = session
 
     def clear_inventory(self):
-        from core.database.models import TenantResourceInventory
         self.session.query(TenantResourceInventory).delete()
 
-    def add_deployment_log(self, tenant_id: str, app_name: str, status: str, action: str, 
-                           target_version: str = None, message: str = None):
-        from core.database.models import DeploymentAuditLog
+    def add_deployment_log(self, tenant_id: str, app_name: str, status: str, action: str, target_version: str = None, message: str = None):
         log = DeploymentAuditLog(
             tenant_id=tenant_id,
             app_name=app_name,
@@ -26,8 +28,6 @@ class SQLWriter:
         self.session.flush()
 
     def upsert_git_inventory(self, data: dict):
-        from core.database.models import GitProject, GitBranch, GitContainer, ProjectType
-        import datetime
         for p in data.get("projects", []):
             project_path = p.get("fullPath") or p.get("path")
             project_name = p.get("name")
@@ -51,7 +51,6 @@ class SQLWriter:
                 self.session.add(project)
                 self.session.flush()
                 
-            # Update Branches
             self.session.query(GitBranch).filter_by(project_id=project.id).delete()
             for b in p.get("branches", []):
                 b_name = b if isinstance(b, str) else b.get("name")
@@ -62,7 +61,6 @@ class SQLWriter:
                     author=b_author
                 ))
                 
-            # Update Containers
             self.session.query(GitContainer).filter_by(project_id=project.id).delete()
             for c in p.get("containers", []):
                 image_path = c.get("name")
@@ -81,12 +79,12 @@ class SQLWriter:
                         author=t.get("author"),
                         is_git_tag=t.get("is_git_tag", False),
                         branch_exists=t.get("branch_exists", False),
+                        has_native_release=t.get("has_native_release", False),
                         tag_created_at=dt
                     ))
         self.session.commit()
 
     def upsert_halo_tenant(self, slug_name: str, target_cluster: str, environment: str, is_internal: bool):
-        from core.database.models import HaloTenant
         tenant = self.session.query(HaloTenant).filter_by(
             slug_name=slug_name, 
             target_cluster=target_cluster
@@ -100,17 +98,15 @@ class SQLWriter:
                 is_internal=is_internal
             )
             self.session.add(tenant)
-            self.session.flush() # To get the ID
+            self.session.flush()
             return tenant
             
-        # Update existing
         tenant.environment = environment
         if not tenant.is_internal_overridden:
             tenant.is_internal = is_internal
         return tenant
 
     def upsert_tenant_resource(self, tenant_id: str, resource_type: str, resource_name: str, metadata_dict: dict, cluster_name: str = None):
-        from core.database.models import TenantResourceInventory
         resource = self.session.query(TenantResourceInventory).filter_by(
             tenant_id=tenant_id,
             resource_type=resource_type,
@@ -131,3 +127,37 @@ class SQLWriter:
             if cluster_name:
                 resource.cluster_name = cluster_name
         return resource
+
+    def set_tenant_internal_flag(self, slug_name: str, is_internal: bool):
+        tenant = self.session.query(HaloTenant).filter_by(slug_name=slug_name).first()
+        if not tenant:
+            return False, f"Tenant '{slug_name}' not found."
+        tenant.is_internal = is_internal
+        tenant.is_internal_overridden = True
+        self.session.flush()
+        return True, f"Successfully set {slug_name} is_internal={is_internal}"
+
+    def create_git_release_audit_log(self, project_name: str, action: str, actor: str, status: str, source_branch: str = None, target_branch: str = None, merge_request_id: str = None):
+        log = GitReleaseAuditLog(
+            project_name=project_name,
+            action=action,
+            actor=actor,
+            status=status,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            merge_request_id=merge_request_id,
+            changelog_generation_method="N/A",
+            merged_features_json={},
+            job_details_json={}
+        )
+        self.session.add(log)
+        self.session.commit()
+        return log
+
+    def update_git_release_audit_log(self, log_id: str, **kwargs):
+        log = self.session.query(GitReleaseAuditLog).filter_by(id=log_id).first()
+        if log:
+            for key, value in kwargs.items():
+                setattr(log, key, value)
+            self.session.commit()
+        return log

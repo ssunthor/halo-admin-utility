@@ -105,6 +105,7 @@ class GitReleaseAuditLog(Base):
     project_name = Column(String(255), nullable=False)
     source_branch = Column(String(255), nullable=True)
     target_branch = Column(String(255), nullable=True)
+    merge_request_id = Column(String(50), nullable=True)
     version_tag = Column(String(50), nullable=True)
     action = Column(String(50), nullable=False)
     actor = Column(String(255), nullable=False, default="gia-ai")
@@ -158,6 +159,7 @@ class GitContainer(Base):
     author = Column(String(255), nullable=True)
     is_git_tag = Column(Boolean, default=False)
     branch_exists = Column(Boolean, default=False)
+    has_native_release = Column(Boolean, default=False)
     tag_created_at = Column(DateTime, nullable=True)
     
     project = relationship("GitProject", back_populates="containers")

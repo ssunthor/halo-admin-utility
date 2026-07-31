@@ -1,5 +1,6 @@
 import logging
 from sqlalchemy.orm import Session
+from core.database.models import HaloTenant, TenantResourceInventory, GitProject, GitReleaseAuditLog
 
 logger = logging.getLogger(__name__)
 
@@ -8,7 +9,6 @@ class SQLReader:
         self.session = session
 
     def get_all_inventory(self, tenant_slug: str = None):
-        from core.database.models import HaloTenant
         query = self.session.query(HaloTenant)
         if tenant_slug:
             query = query.filter_by(slug_name=tenant_slug)
@@ -30,22 +30,18 @@ class SQLReader:
                     
                 item = r.metadata_json or {}
                 item["name"] = r.resource_name
-                # store the cluster for sorting if different from tenant target
                 r_cluster = r.cluster_name or t.target_cluster
                 item["cluster"] = r_cluster
                 
-                # Make sure the cluster exists in the result
                 if r_cluster not in result[t.slug_name]:
                     result[t.slug_name][r_cluster] = dict(tenant_dict)
                     result[t.slug_name][r_cluster]["resources"] = {}
                 
-                # add the resource to the correct cluster in the result
                 if r_type not in result[t.slug_name][r_cluster]["resources"]:
                     result[t.slug_name][r_cluster]["resources"][r_type] = []
                     
                 result[t.slug_name][r_cluster]["resources"][r_type].append(item)
                 
-            # If a tenant has no resources (or only app resources), ensure the primary target_cluster exists
             if not t.resources:
                 result[t.slug_name][t.target_cluster] = dict(tenant_dict)
                 result[t.slug_name][t.target_cluster]["resources"] = {}
@@ -53,7 +49,6 @@ class SQLReader:
         return result
 
     def get_active_deployments_counts(self):
-        from core.database.models import TenantResourceInventory
         import json
         
         counts = {}
@@ -81,7 +76,6 @@ class SQLReader:
         return counts
 
     def get_git_inventory(self, project_filter: str = None):
-        from core.database.models import GitProject
         query = self.session.query(GitProject).filter_by(is_ignored=False)
         
         if project_filter:
@@ -103,7 +97,8 @@ class SQLReader:
         projects = query.all()
         result = []
         for p in projects:
-            p_audit = audit_mapping.get(p.project_name, {})
+            # FIX: Use project_path to map correctly from audit log full paths!
+            p_audit = audit_mapping.get(p.project_path, {})
             branches = {b.name: b.author for b in p.branches}
             
             releases = []
@@ -125,7 +120,8 @@ class SQLReader:
                     "author": c.author,
                     "created_at": c.tag_created_at.isoformat() if c.tag_created_at else "unknown",
                     "active_deployments": deploy_count,
-                    "active_namespaces": deploy_namespaces
+                    "active_namespaces": deploy_namespaces,
+                    "has_native_release": c.has_native_release
                 }
                 
                 if tag.startswith('v') and '-dev' not in tag:
@@ -148,7 +144,8 @@ class SQLReader:
                                 "container_tag": tag,
                                 "container_created": c_info["created_at"],
                                 "active_deployments": deploy_count,
-                                "active_namespaces": deploy_namespaces
+                                "active_namespaces": deploy_namespaces,
+                                "has_native_release": c.has_native_release
                             })
                             matched_containers.add(tag)
                             break
@@ -163,7 +160,8 @@ class SQLReader:
                         "author": c.author,
                         "created_at": c.tag_created_at.isoformat() if c.tag_created_at else "unknown",
                         "active_deployments": deploy_info.get('count', 0),
-                        "active_namespaces": deploy_info.get('namespaces', [])
+                        "active_namespaces": deploy_info.get('namespaces', []),
+                        "has_native_release": c.has_native_release
                     })
                     
             matched_branches = [f["branch"] for f in features]
@@ -190,7 +188,6 @@ class SQLReader:
         return result
 
     def get_git_containers(self):
-        from core.database.models import GitProject
         projects = self.session.query(GitProject).filter_by(is_ignored=False).all()
         all_tags = []
         for p in projects:
@@ -207,12 +204,16 @@ class SQLReader:
         return all_tags
 
     def get_git_audit_logs(self, limit: int = 50, audit_id: str = None, project_name: str = None):
-        from core.database.models import GitReleaseAuditLog
         query = self.session.query(GitReleaseAuditLog)
         if audit_id:
             query = query.filter(GitReleaseAuditLog.id.startswith(audit_id))
         elif project_name:
-            query = query.filter(GitReleaseAuditLog.project_name == project_name)
+            from sqlalchemy import or_
+            short_name = project_name.split('/')[-1]
+            query = query.filter(or_(
+                GitReleaseAuditLog.project_name == project_name,
+                GitReleaseAuditLog.project_name == short_name
+            ))
         records = query.order_by(GitReleaseAuditLog.timestamp.desc()).limit(limit).all()
         result = []
         for rec in records:
@@ -222,6 +223,7 @@ class SQLReader:
                 "project_name": rec.project_name,
                 "source_branch": getattr(rec, 'source_branch', 'N/A'),
                 "target_branch": getattr(rec, 'target_branch', 'N/A'),
+                "merge_request_id": getattr(rec, 'merge_request_id', None),
                 "version_tag": rec.version_tag,
                 "action": rec.action,
                 "actor": rec.actor,
@@ -234,5 +236,19 @@ class SQLReader:
         return result
 
     def get_successful_git_releases(self):
-        from core.database.models import GitReleaseAuditLog
         return self.session.query(GitReleaseAuditLog).filter(GitReleaseAuditLog.status == 'SUCCESS').all()
+
+    def get_active_git_release_audit_log(self, project_name: str):
+        return self.session.query(GitReleaseAuditLog).filter_by(
+            project_name=project_name, 
+            status="RUNNING"
+        ).first()
+
+    def get_previous_successful_release(self, project_name: str, source_branch: str, target_branch: str, action: str):
+        return self.session.query(GitReleaseAuditLog).filter_by(
+            project_name=project_name,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            status="SUCCESS",
+            action=action
+        ).order_by(GitReleaseAuditLog.timestamp.desc()).first()

@@ -11,7 +11,10 @@ from core.orchestrators.changelog_orchestrator import ChangelogOrchestrator
 from core.llm_interface import vLLMClient
 from prompts.git_commit_prompt import GIT_COMMIT_PROMPT
 from core.database.database import get_engine, get_session_factory
-from core.database.models import GitReleaseAuditLog
+from core.io_handlers.sql_reader import SQLReader
+from core.io_handlers.sql_writer import SQLWriter
+from core.managers.git_pipeline_manager import GitPipelineManager
+from core.managers.container_registry_manager import ContainerRegistryManager
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,8 @@ class ReleaseOrchestrator:
     def __init__(self, config: Dict[str, Any], gitlab_manager):
         self.config = config
         self.gitlab_manager = gitlab_manager
+        self.pipeline_manager = GitPipelineManager(config)
+        self.registry_manager = ContainerRegistryManager(config)
         db_config = self.config.get('database', {})
         dsn = db_config.get('write_dsn')
         self.Session = None
@@ -26,22 +31,40 @@ class ReleaseOrchestrator:
             engine = get_engine(dsn)
             self.Session = get_session_factory(engine)
 
+    def _format_release_notes(self, version: str, changelog_entry: dict) -> str:
+        md = f"## Release {version}\n\n"
+        if 'date' in changelog_entry:
+            md += f"**Date:** {changelog_entry['date']} | **Author:** {changelog_entry.get('author', 'Unknown')}\n\n"
+        
+        changes = changelog_entry.get('changes', [])
+        for category_block in changes:
+            cat_name = category_block.get('category', 'Updates')
+            items = category_block.get('items', [])
+            if items:
+                md += f"### {cat_name}\n"
+                for item in items:
+                    md += f"* {item}\n"
+                md += "\n"
+        return md.strip()
+
     def run_release(self, project_name: str, source_branch: str, target_branch: str, 
-                    skip_changelog: bool, keep_branch: bool, debug: bool = False, author: str = None) -> Generator[Any, None, None]:
+                    skip_changelog: bool, keep_branch: bool, debug: bool = False, author: str = None, dry_run: bool = False) -> Generator[Any, None, None]:
         
         if not self.gitlab_manager:
             raise RuntimeError("GitlabManager is not initialized.")
             
         audit_log = None
         session = None
+        sql_reader = None
+        sql_writer = None
         
         if self.Session:
             try:
                 session = self.Session()
-                active_lock = session.query(GitReleaseAuditLog).filter_by(
-                    project_name=project_name, 
-                    status="RUNNING"
-                ).first()
+                sql_reader = SQLReader(session)
+                sql_writer = SQLWriter(session)
+                
+                active_lock = sql_reader.get_active_git_release_audit_log(project_name)
                 
                 if active_lock:
                     msg = f"⚠️ WARNING: A release (Action: {active_lock.action}) is already currently running for {project_name} by {active_lock.actor}. Please wait for it to finish."
@@ -49,61 +72,68 @@ class ReleaseOrchestrator:
                     session.close()
                     return
                     
-                audit_log = GitReleaseAuditLog(
+                audit_log = sql_writer.create_git_release_audit_log(
                     project_name=project_name,
-                    action="GIT_RELEASE",
-                    actor="gia-ai",
+                    action="GIT_RELEASE_DRY_RUN" if dry_run else "GIT_RELEASE",
+                    actor=author or "gia-ai",
                     status="RUNNING",
                     source_branch=source_branch,
-                    target_branch=target_branch,
-                    changelog_generation_method="N/A",
-                    merged_features_json={},
-                    job_details_json={}
+                    target_branch=target_branch
                 )
-                session.add(audit_log)
-                session.commit()
             except Exception as e:
                 logger.error(f"[GitRelease] Failed to acquire DB lock: {e}")
                 if session:
                     session.rollback()
 
         try:
-            for item in self._run_release_internal(project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, session):
+            for item in self._run_release_internal(project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, sql_reader, sql_writer, dry_run):
                 if isinstance(item, dict) and not item.get("success", True):
-                    if audit_log:
-                        audit_log.status = "FAILED"
-                        audit_log.error_message = item.get("message", "Unknown error occurred.")
-                        if session: session.commit()
+                    if audit_log and sql_writer:
+                        sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message=item.get("message", "Unknown error occurred."))
                 yield item
         except Exception as e:
-            if audit_log:
-                audit_log.status = "FAILED"
-                audit_log.error_message = f"Unhandled Exception: {str(e)}"
-                if session: session.commit()
+            if audit_log and sql_writer:
+                sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message=f"Unhandled Exception: {str(e)}")
             logger.error(f"[GitRelease] Unhandled Exception: {e}", exc_info=True)
             raise e
         finally:
             if session and audit_log:
                 try:
                     if audit_log.status == "RUNNING":
-                        audit_log.status = "FAILED"
-                        audit_log.error_message = "Orchestration aborted unexpectedly or connection dropped."
-                    session.commit()
+                        sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message="Orchestration aborted unexpectedly or connection dropped.")
                     session.close()
                 except Exception:
                     pass
 
-    def _run_release_internal(self, project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, session):
-        yield f"Starting release: {source_branch} -> {target_branch}"
+    def _run_release_internal(self, project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, sql_reader, sql_writer, dry_run):
+        mode_str = "[DRY-RUN] " if dry_run else ""
+        yield f"{mode_str}Starting release: {source_branch} -> {target_branch}"
         
-        if session:
-            previous_release = session.query(GitReleaseAuditLog).filter_by(
-                project_name=project_name,
-                source_branch=source_branch,
-                target_branch=target_branch,
-                status="SUCCESS",
-                action="GIT_RELEASE"
-            ).order_by(GitReleaseAuditLog.timestamp.desc()).first()
+        yield "Syncing Git Inventory to ensure latest state before release..."
+        try:
+            from core.managers.git_inventory_manager import GitInventoryManager
+            inv_manager = GitInventoryManager(self.config)
+            audit_mapping = {}
+            if sql_reader:
+                logs = sql_reader.get_successful_git_releases()
+                for log in logs:
+                    if log.version_tag and log.project_name:
+                        if log.project_name not in audit_mapping:
+                            audit_mapping[log.project_name] = {}
+                        audit_mapping[log.project_name][log.version_tag] = log.source_branch
+            
+            result_json = inv_manager.fetch_git_inventory_graphql(project_path=project_name, audit_mapping=audit_mapping)
+            import json
+            data = json.loads(result_json)
+            if sql_writer:
+                sql_writer.upsert_git_inventory(data)
+                yield "✅ Git Inventory successfully synced."
+        except Exception as e:
+            logger.error(f"[GitRelease] Pre-release inventory sync failed: {e}")
+            yield f"⚠️ Warning: Pre-release inventory sync failed: {e}"
+        
+        if sql_reader:
+            previous_release = sql_reader.get_previous_successful_release(project_name, source_branch, target_branch, "GIT_RELEASE")
             
             if previous_release:
                 yield f"⚠️ WARNING: A successful release for '{source_branch}' -> '{target_branch}' was already recorded on {previous_release.timestamp.strftime('%Y-%m-%d %H:%M:%S')}. Proceeding anyway in case of new commits..."
@@ -118,6 +148,8 @@ class ReleaseOrchestrator:
                 author_email = resolved.get('email', f"{resolved['username']}@gtt.net")
                 author_id = resolved.get('id')
                 yield f"✅ Mapped author override '{author}' to GitLab user: {author_name} ({author_email})"
+                if audit_log and sql_writer:
+                    sql_writer.update_git_release_audit_log(audit_log.id, actor=author_name)
             else:
                 msg = f"❌ Could not resolve author '{author}' in GitLab project members or users."
                 yield {"success": False, "message": msg}
@@ -173,11 +205,29 @@ class ReleaseOrchestrator:
         tv = parse_version(target_version)
         sv = parse_version(source_version)
         
-        next_base = tv if tv >= sv else sv
-        next_patch = next_base.micro + 1
-        next_version = f"{next_base.major}.{next_base.minor}.{next_patch}"
-        
+        changelog_already_generated = False
+        if sv > tv:
+            next_version = source_version
+            changelog_already_generated = True
+        else:
+            next_base = tv if tv >= sv else sv
+            next_patch = next_base.micro + 1
+            next_version = f"{next_base.major}.{next_base.minor}.{next_patch}"
+            
         version = next_version
+        
+        def _get_tag(v_str):
+            v = str(v_str)
+            if target_branch == 'dev' and not v.endswith('-dev'):
+                v += '-dev'
+            if not v.startswith('v'):
+                v = 'v' + v
+            return v
+            
+        if audit_log and sql_writer:
+            sql_writer.update_git_release_audit_log(audit_log.id, version_tag=_get_tag(version))
+
+        final_yaml = ""
         
         if not skip_changelog:
             try:
@@ -186,9 +236,9 @@ class ReleaseOrchestrator:
                 
                 local_base = self.config['external_services']['gitlab']['local_clone_path']
                 rel_path = project_name
-                project_path = self.config['external_services']['gitlab']['project_path']
-                if rel_path.startswith(project_path + "/"):
-                    rel_path = rel_path[len(project_path) + 1:]
+                project_path_cfg = self.config['external_services']['gitlab']['project_path']
+                if rel_path.startswith(project_path_cfg + "/"):
+                    rel_path = rel_path[len(project_path_cfg) + 1:]
                 repo_local_path = os.path.join(local_base, rel_path)
                 
                 if author:
@@ -214,7 +264,19 @@ class ReleaseOrchestrator:
                 cl_path = os.path.join(repo_local_path, 'docs', 'CHANGELOG.yaml')
                 orchestrator = ChangelogOrchestrator(config=self.config)
                 
-                if not os.path.exists(cl_path):
+                if changelog_already_generated:
+                    yield f"Changelog for v{version} already exists in source branch [📜 Release Notes found]. Skipping generation."
+                    if os.path.exists(cl_path):
+                        with open(cl_path, 'r') as f:
+                            final_yaml = f.read()
+                            
+                    if audit_log and sql_writer:
+                        sql_writer.update_git_release_audit_log(
+                            audit_log.id, 
+                            changelog_generation_method="PRE_EXISTING",
+                            version_tag=_get_tag(version)
+                        )
+                elif not os.path.exists(cl_path):
                     yield "⚠️ 'docs/CHANGELOG.yaml' is missing. Initiating automatic full historical backfill..."
                     full_backfill_yaml = None
                     for item in orchestrator.run_backfill(repo_local_path, source_branch, start_version="0.1.0"):
@@ -236,14 +298,18 @@ class ReleaseOrchestrator:
                         if isinstance(parsed_backfill, list) and len(parsed_backfill) > 0:
                             top_entry_source = parsed_backfill[0]
                             version = top_entry_source.get('version', '0.1.0')
-                        if audit_log:
-                            audit_log.changelog_generation_method = "AUTO_BACKFILLED_LLM"
-                            audit_log.merged_features_json = {"raw_yaml": full_backfill_yaml}
-                            if session: session.commit()
+                        if audit_log and sql_writer:
+                            sql_writer.update_git_release_audit_log(
+                                audit_log.id, 
+                                changelog_generation_method="AUTO_BACKFILLED_LLM", 
+                                merged_features_json={"raw_yaml": full_backfill_yaml},
+                                version_tag=_get_tag(version)
+                            )
                     except Exception as e:
                         logger.error(f"[GitRelease] Failed to parse backfilled changelog: {e}")
                         
                     yield "Full changelog backfill complete. Committing and pushing docs/CHANGELOG.yaml..."
+                    final_yaml = full_backfill_yaml
                 else:
                     yield f"Checking changelog sync (Target: v{target_version}, Source: v{source_version}) -> Target Release: v{next_version}"
                     yield f"Generating semantic release notes for v{next_version}..."
@@ -257,7 +323,6 @@ class ReleaseOrchestrator:
                         version=next_version
                     )
                     
-                    final_yaml = None
                     for item in generator:
                         if isinstance(item, dict) and "final_yaml" in item:
                             final_yaml = item["final_yaml"]
@@ -305,59 +370,71 @@ class ReleaseOrchestrator:
                         parsed_new = yaml.safe_load(final_yaml)
                         if isinstance(parsed_new, list) and len(parsed_new) > 0:
                             top_entry_source = parsed_new[0]
-                        if audit_log:
-                            audit_log.changelog_generation_method = "AUTO_GENERATED_LLM"
-                            audit_log.merged_features_json = {"raw_yaml": final_yaml}
-                            if session: session.commit()
+                        if audit_log and sql_writer:
+                            sql_writer.update_git_release_audit_log(
+                                audit_log.id, 
+                                changelog_generation_method="AUTO_GENERATED_LLM", 
+                                merged_features_json={"raw_yaml": final_yaml},
+                                version_tag=_get_tag(version)
+                            )
                     except Exception as e:
                         logger.error(f"[GitRelease] Failed to parse newly generated changelog for commit msg: {e}")
                         
                     yield f"Committing and pushing generated changelog (v{next_version})..."
                 
-                subprocess.run(['git', 'add', 'docs/CHANGELOG.yaml'], cwd=repo_local_path)
-                commit_res = subprocess.run(['git', 'commit', '-m', f"chore(release): auto-generate changelog for v{version}"], cwd=repo_local_path, capture_output=True, text=True)
-                if commit_res.returncode != 0 and "nothing to commit" not in commit_res.stdout:
-                    yield {"success": False, "message": f"Failed to commit changelog: {commit_res.stderr}"}
-                    return
-                    
-                push_res = subprocess.run(['git', 'push', '-o', 'ci.skip', 'origin', source_branch], cwd=repo_local_path, capture_output=True, text=True)
-                if push_res.returncode != 0:
-                    logger.warning(f"[GitRelease] Push rejected for {source_branch}. Attempting pull --rebase to resolve race condition...")
-                    yield "Push rejected (likely concurrent update). Attempting pull --rebase..."
-                    
-                    rebase_res = subprocess.run(['git', 'pull', '--rebase', 'origin', source_branch], cwd=repo_local_path, capture_output=True, text=True)
-                    if rebase_res.returncode != 0:
-                        subprocess.run(['git', 'rebase', '--abort'], cwd=repo_local_path)
-                        yield {"success": False, "message": f"Failed to rebase changelog: {rebase_res.stderr}"}
-                        return
-                        
-                    push_res_2 = subprocess.run(['git', 'push', '-o', 'ci.skip', 'origin', source_branch], cwd=repo_local_path, capture_output=True, text=True)
-                    if push_res_2.returncode != 0:
-                        yield {"success": False, "message": f"Failed to push changelog after rebase: {push_res_2.stderr}"}
-                        return
-                    yield "Successfully rebased and pushed changelog."
+                if not changelog_already_generated:
+                    if dry_run:
+                        yield f"[DRY-RUN] Would execute: git add docs/CHANGELOG.yaml"
+                        yield f"[DRY-RUN] Would execute: git commit -m 'chore(release): auto-generate changelog for v{version}'"
+                        yield f"[DRY-RUN] Would execute: git push -o ci.skip origin {source_branch}"
+                    else:
+                        subprocess.run(['git', 'add', 'docs/CHANGELOG.yaml'], cwd=repo_local_path)
+                        commit_res = subprocess.run(['git', 'commit', '-m', f"chore(release): auto-generate changelog for v{version}"], cwd=repo_local_path, capture_output=True, text=True)
+                        if commit_res.returncode != 0 and "nothing to commit" not in commit_res.stdout:
+                            yield {"success": False, "message": f"Failed to commit changelog: {commit_res.stderr}"}
+                            return
+                            
+                        push_res = subprocess.run(['git', 'push', '-o', 'ci.skip', 'origin', source_branch], cwd=repo_local_path, capture_output=True, text=True)
+                        if push_res.returncode != 0:
+                            logger.warning(f"[GitRelease] Push rejected for {source_branch}. Attempting pull --rebase to resolve race condition...")
+                            yield "Push rejected (likely concurrent update). Attempting pull --rebase..."
+                            
+                            rebase_res = subprocess.run(['git', 'pull', '--rebase', 'origin', source_branch], cwd=repo_local_path, capture_output=True, text=True)
+                            if rebase_res.returncode != 0:
+                                subprocess.run(['git', 'rebase', '--abort'], cwd=repo_local_path)
+                                yield {"success": False, "message": f"Failed to rebase changelog: {rebase_res.stderr}"}
+                                return
+                                
+                            push_res_2 = subprocess.run(['git', 'push', '-o', 'ci.skip', 'origin', source_branch], cwd=repo_local_path, capture_output=True, text=True)
+                            if push_res_2.returncode != 0:
+                                yield {"success": False, "message": f"Failed to push changelog after rebase: {push_res_2.stderr}"}
+                                return
+                            yield "Successfully rebased and pushed changelog."
                 
                 yield f"Syncing changelog to deployment docs repository..."
-                try:
-                    proj_basename = project_name.split('/')[-1]
-                    self.gitlab_manager.commit_file_api(
-                        project_path="ai/halo/deployment",
-                        file_path=f"docs/{proj_basename}/CHANGELOG.yaml",
-                        content=open(cl_path, 'r').read(),
-                        branch="main",
-                        commit_msg=f"chore(docs): sync changelog for {proj_basename} v{version}"
-                    )
-                    yield f"Successfully synced changelog to deployment/docs/{proj_basename}/CHANGELOG.yaml."
-                except Exception as e:
-                    logger.error(f"[GitRelease] Failed to push changelog to deployment repo: {e}")
-                    yield f"Warning: Failed to sync changelog to deployment repo: {e}"
+                if dry_run:
+                    yield f"[DRY-RUN] Would sync changelog to deployment/docs/{project_name.split('/')[-1]}/CHANGELOG.yaml."
+                else:
+                    try:
+                        proj_basename = project_name.split('/')[-1]
+                        self.gitlab_manager.commit_file_api(
+                            project_path="ai/halo/deployment",
+                            file_path=f"docs/{proj_basename}/CHANGELOG.yaml",
+                            content=open(cl_path, 'r').read(),
+                            branch="main",
+                            commit_msg=f"chore(docs): sync changelog for {proj_basename} v{version}"
+                        )
+                        yield f"Successfully synced changelog to deployment/docs/{proj_basename}/CHANGELOG.yaml."
+                    except Exception as e:
+                        logger.error(f"[GitRelease] Failed to push changelog to deployment repo: {e}")
+                        yield f"Warning: Failed to sync changelog to deployment repo: {e}"
                         
             except Exception as e:
                 logger.error(f"[GitRelease] Changelog generation/backfill failed: {e}")
                 yield {"success": False, "message": f"Changelog generation/backfill failed: {e}"}
                 return
         else:
-            version = source_version
+            yield f"Changelog generation skipped via flag. Proceeding with release v{version}..."
             
         try:
             llm_config = self.config.get('llm_engines', {}).get('primary')
@@ -379,64 +456,84 @@ class ReleaseOrchestrator:
             logger.error(f"[GitRelease] Failed to generate commit message: {e}")
             yield {"success": False, "message": f"Failed to generate commit message: {e}"}
             return
-            
-        logger.info("[GitRelease] Triggering Merge via GitLab API...")
-        yield "Triggering Merge via GitLab API..."
-        success, mr_iid, msg = self.gitlab_manager.create_and_merge_mr(
-            project_name, 
-            source_branch, 
-            target_branch, 
-            commit_msg,
-            keep_branch=keep_branch,
-            assignee_id=author_id
-        )
-        if not success:
-            logger.error(f"[GitRelease] Merge failed: {msg}")
-            yield {"success": False, "message": msg}
-            return
-            
-        yield f"Successfully queued merge for '{source_branch}' into '{target_branch}'."
-        
-        import gitlab
-        gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
-        project = gl.projects.get(project_name)
-        
-        yield "Waiting for MR pipeline to pass before merge..."
-        
-        for update in self.gitlab_manager.monitor_pipeline(project_name, mr_iid=mr_iid, debug=debug):
-            if isinstance(update, dict):
-                if "telemetry" in update and audit_log:
-                    audit_log.job_details_json = update["telemetry"]
-                    if session: session.commit()
-            yield update
-            
-        merged = False
-        for _ in range(30):
-            mr = project.mergerequests.get(mr_iid)
-            try:
-                mr = project.mergerequests.get(mr_iid)
-                if mr.state == 'merged':
-                    merged = True
-                    break
-                if mr.state == 'closed':
-                    break
-                    
-                yield f"Merge in progress (State: {mr.state}, Status: {mr.detailed_merge_status})..."
-            except Exception as e:
-                logger.error(f"[GitRelease] Failed to check MR status: {e}")
+
+        mr_iid = 0
+        mr_target_branch = target_branch
+
+        if dry_run:
+            yield f"[DRY-RUN] Would create and merge MR from '{source_branch}' to '{target_branch}'."
+            yield f"[DRY-RUN] Would monitor MR pipeline and wait for merge success."
+        else:
+            logger.info("[GitRelease] Triggering Merge via GitLab API...")
+            yield "Triggering Merge via GitLab API..."
+            success, mr_iid, msg = self.pipeline_manager.create_and_merge_mr(
+                project_name, 
+                source_branch, 
+                target_branch, 
+                commit_msg,
+                keep_branch=keep_branch,
+                assignee_id=author_id
+            )
+            if not success:
+                logger.error(f"[GitRelease] Merge failed: {msg}")
+                yield {"success": False, "message": msg}
+                return
                 
-            import time
-            time.sleep(5)
+            if audit_log and sql_writer and mr_iid:
+                sql_writer.update_git_release_audit_log(audit_log.id, merge_request_id=str(mr_iid))
+                
+            yield f"Successfully queued merge for '{source_branch}' into '{target_branch}'."
             
-        if not merged:
-            yield f"❌ ❌ MR failed to merge. State: {mr.state}, Status: {mr.merge_status}. Aborting release."
-            yield f"\nTo retry this release once the issue is fixed, run:"
-            yield f"  python3 halo_admin_utility.py git retry --repo {project_name} --merge {mr.iid}"
-            err_msg = f"MR failed to merge. State: {mr.state}, Status: {mr.detailed_merge_status}. Aborting release."
-            logger.error(f"[GitRelease] {err_msg}")
-            yield {"success": False, "message": err_msg}
-            return
-        
+            import gitlab
+            gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
+            project = gl.projects.get(project_name)
+            
+            yield "Waiting for MR pipeline to pass before merge..."
+            
+            pipeline_success = False
+            for update in self.pipeline_manager.monitor_pipeline(project_name, mr_iid=mr_iid, debug=debug):
+                if isinstance(update, dict) and "pipeline_success" in update:
+                    pipeline_success = update.get("pipeline_success", False)
+                    if "telemetry" in update and audit_log and sql_writer:
+                        sql_writer.update_git_release_audit_log(audit_log.id, job_details_json=update["telemetry"])
+                    continue
+                yield update
+
+            if not pipeline_success:
+                err_msg = "MR pipeline failed or was canceled. Aborting release."
+                logger.error(f"[GitRelease] {err_msg}")
+                yield {"success": False, "message": err_msg}
+                return
+                
+            merged = False
+            for _ in range(30):
+                mr = project.mergerequests.get(mr_iid)
+                try:
+                    mr = project.mergerequests.get(mr_iid)
+                    if mr.state == 'merged':
+                        merged = True
+                        break
+                    if mr.state == 'closed':
+                        break
+                        
+                    yield f"Merge in progress (State: {mr.state}, Status: {mr.detailed_merge_status})..."
+                except Exception as e:
+                    logger.error(f"[GitRelease] Failed to check MR status: {e}")
+                    
+                import time
+                time.sleep(5)
+                
+            if not merged:
+                yield f"❌ ❌ MR failed to merge. State: {mr.state}, Status: {mr.merge_status}. Aborting release."
+                yield f"\nTo retry this release once the issue is fixed, run:"
+                yield f"  python3 halo_admin_utility.py git retry --repo {project_name} --merge {mr.iid}"
+                err_msg = f"MR failed to merge. State: {mr.state}, Status: {mr.detailed_merge_status}. Aborting release."
+                logger.error(f"[GitRelease] {err_msg}")
+                yield {"success": False, "message": err_msg}
+                return
+
+            mr_target_branch = mr.target_branch
+            
         target_version = version
         if target_branch == 'dev':
             if not target_version.endswith('-dev'):
@@ -447,32 +544,87 @@ class ReleaseOrchestrator:
         slug = re.sub(r'[^a-z0-9]+', '-', source_branch.lower()).strip('-')[:63]
         yield f"Retagging container from '{slug}' to '{target_version}'..."
         
-        retag_success, retag_msg = self.gitlab_manager.retag_container(project_name, slug, target_version)
-        if not retag_success:
-            logger.warning(f"[GitRelease] Container retagging failed: {retag_msg}")
-            yield f"⚠️ Pipeline merge complete, but container retagging failed: {retag_msg}"
-            
-        if audit_log:
-            audit_log.status = "SUCCESS"
-            audit_log.version_tag = target_version
-            if session: session.commit()
-            
-        yield f"Release #MR-{mr_iid} completed successfully! ✅"
+        if dry_run:
+            yield f"[DRY-RUN] Would retag container from '{slug}' to '{target_version}'."
+        else:
+            retag_success, retag_msg = self.registry_manager.retag_container(project_name, slug, target_version)
+            if not retag_success:
+                logger.warning(f"[GitRelease] Container retagging failed: {retag_msg}")
+                yield {"success": False, "message": f"Pipeline merge complete, but container retagging failed: {retag_msg}"}
+                return
 
-    def run_retry(self, project_name: str, pipeline_id: int = 0, merge_id: int = 0, skip_warnings: bool = False, debug: bool = False) -> Generator[Any, None, None]:
+        yield f"Creating Git Tag '{target_version}' on '{mr_target_branch}'..."
+        
+        if dry_run:
+            yield f"[DRY-RUN] Would create Git Tag '{target_version}' and native GitLab Release."
+        else:
+            tag_success, tag_msg = self.gitlab_manager.create_tag(project_name, target_version, mr_target_branch)
+            if not tag_success and "already exists" not in tag_msg.lower() and "400" not in tag_msg.lower():
+                yield {"success": False, "message": f"Failed to create Git tag: {tag_msg}"}
+                return
+            else:
+                if not tag_success:
+                    yield f"ℹ️ Git tag '{target_version}' already exists, proceeding to Release creation..."
+                yield f"Creating native GitLab Release for '{target_version}'..."
+                try:
+                    parsed_new = yaml.safe_load(final_yaml) if final_yaml else [top_entry_source]
+                    changelog_entry = parsed_new[0] if isinstance(parsed_new, list) and len(parsed_new) > 0 else {}
+                    release_desc = self._format_release_notes(target_version, changelog_entry)
+                    rel_success, rel_msg = self.gitlab_manager.create_release(project_name, target_version, release_desc)
+                    if not rel_success:
+                        yield {"success": False, "message": f"Failed to create GitLab Release: {rel_msg}"}
+                        return
+                    else:
+                        yield f"✅ GitLab Release '{target_version}' created successfully!"
+                except Exception as e:
+                    yield {"success": False, "message": f"Failed to format or create GitLab Release: {e}"}
+                    return
+            
+        if audit_log and sql_writer:
+            sql_writer.update_git_release_audit_log(audit_log.id, status="SUCCESS", version_tag=target_version)
+
+        yield "Syncing updated Git Inventory to database..."
+        if dry_run:
+            yield f"[DRY-RUN] Would synchronize targeted Git inventory for '{project_name}' to DB."
+        else:
+            try:
+                from core.managers.git_inventory_manager import GitInventoryManager
+                inv_manager = GitInventoryManager(self.config)
+                audit_mapping = {}
+                logs = sql_reader.get_successful_git_releases()
+                for log in logs:
+                    if log.version_tag and log.project_name:
+                        if log.project_name not in audit_mapping:
+                            audit_mapping[log.project_name] = {}
+                        audit_mapping[log.project_name][log.version_tag] = log.source_branch
+                
+                result_json = inv_manager.fetch_git_inventory_graphql(project_path=project_name, audit_mapping=audit_mapping)
+                import json
+                data = json.loads(result_json)
+                sql_writer.upsert_git_inventory(data)
+                yield "✅ Git Inventory successfully synced."
+            except Exception as e:
+                logger.error(f"[GitRelease] Failed to sync inventory: {e}")
+                yield f"⚠️ Warning: Failed to sync git inventory: {e}"
+            
+        yield {"success": True, "message": f"{mode_str}Release completed successfully! ✅"}
+
+    def run_retry(self, project_name: str, pipeline_id: int = 0, merge_id: int = 0, skip_warnings: bool = False, debug: bool = False, author: str = None) -> Generator[Any, None, None]:
         if not self.gitlab_manager:
             raise RuntimeError("GitlabManager is not initialized.")
             
         audit_log = None
         session = None
+        sql_reader = None
+        sql_writer = None
         
         if self.Session:
             try:
                 session = self.Session()
-                active_lock = session.query(GitReleaseAuditLog).filter_by(
-                    project_name=project_name, 
-                    status="RUNNING"
-                ).first()
+                sql_reader = SQLReader(session)
+                sql_writer = SQLWriter(session)
+                
+                active_lock = sql_reader.get_active_git_release_audit_log(project_name)
                 
                 if active_lock:
                     msg = f"⚠️ WARNING: A release (Action: {active_lock.action}) is already currently running for {project_name} by {active_lock.actor}. Please wait for it to finish."
@@ -480,51 +632,49 @@ class ReleaseOrchestrator:
                     session.close()
                     return
                     
-                audit_log = GitReleaseAuditLog(
+                audit_log = sql_writer.create_git_release_audit_log(
                     project_name=project_name,
                     action="GIT_RETRY",
-                    actor="gia-ai",
-                    status="RUNNING",
-                    changelog_generation_method="N/A",
-                    merged_features_json={},
-                    job_details_json={}
+                    actor=author or "gia-ai",
+                    status="RUNNING"
                 )
-                session.add(audit_log)
-                session.commit()
             except Exception as e:
                 logger.error(f"[GitRetry] Failed to acquire DB lock: {e}")
                 if session:
                     session.rollback()
 
         try:
-            for item in self._run_retry_internal(project_name, pipeline_id, merge_id, skip_warnings, debug, audit_log, session):
+            for item in self._run_retry_internal(project_name, pipeline_id, merge_id, skip_warnings, debug, audit_log, sql_reader, sql_writer, author):
                 if isinstance(item, dict) and not item.get("success", True):
-                    if audit_log:
-                        audit_log.status = "FAILED"
-                        audit_log.error_message = item.get("message", "Unknown error occurred.")
-                        if session: session.commit()
+                    if audit_log and sql_writer:
+                        sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message=item.get("message", "Unknown error occurred."))
                 yield item
         except Exception as e:
-            if audit_log:
-                audit_log.status = "FAILED"
-                audit_log.error_message = f"Unhandled Exception: {str(e)}"
-                if session: session.commit()
+            if audit_log and sql_writer:
+                sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message=f"Unhandled Exception: {str(e)}")
             logger.error(f"[GitRetry] Unhandled Exception: {e}", exc_info=True)
             raise e
         finally:
             if session and audit_log:
                 try:
                     if audit_log.status == "RUNNING":
-                        audit_log.status = "FAILED"
-                        audit_log.error_message = "Orchestration aborted unexpectedly or connection dropped."
-                    session.commit()
+                        sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message="Orchestration aborted unexpectedly or connection dropped.")
                     session.close()
                 except Exception:
                     pass
 
-    def _run_retry_internal(self, project_name: str, pipeline_id: int, merge_id: int, skip_warnings: bool, debug: bool, audit_log, session) -> Generator[Any, None, None]:
+    def _run_retry_internal(self, project_name: str, pipeline_id: int, merge_id: int, skip_warnings: bool, debug: bool, audit_log, sql_reader, sql_writer, author: str) -> Generator[Any, None, None]:
             
         yield f"Initiating retry for pipeline #{pipeline_id} on project '{project_name}'..."
+
+        author_name = self.config.get('external_services', {}).get('gitlab', {}).get('bot_username', 'GIA AI Bot')
+        if author:
+            resolved = self.gitlab_manager.resolve_user(project_name, author)
+            if resolved and 'name' in resolved:
+                author_name = resolved['name']
+                yield f"✅ Mapped author override '{author}' to GitLab user: {author_name}"
+                if audit_log and sql_writer:
+                    sql_writer.update_git_release_audit_log(audit_log.id, actor=author_name)
         
         try:
             import gitlab
@@ -542,10 +692,8 @@ class ReleaseOrchestrator:
                     pipeline_id = pipelines[0].id
                     yield f"Found latest pipeline #{pipeline_id} for MR !{merge_id}."
                     
-                if audit_log:
-                    audit_log.source_branch = mr.source_branch
-                    audit_log.target_branch = mr.target_branch
-                    if session: session.commit()
+                if audit_log and sql_writer and not audit_log.source_branch:
+                    sql_writer.update_git_release_audit_log(audit_log.id, source_branch=mr.source_branch, target_branch=mr.target_branch, merge_request_id=str(mr.iid))
 
             p = project.pipelines.get(pipeline_id)
             
@@ -562,6 +710,9 @@ class ReleaseOrchestrator:
                     new_p = mr.pipelines.create()
                     pipeline_id = new_p.id
                     yield f"Created new MR pipeline #{pipeline_id} to replace the skipped one."
+                    
+                    if audit_log and sql_writer and not audit_log.source_branch:
+                        sql_writer.update_git_release_audit_log(audit_log.id, source_branch=mr.source_branch, target_branch=mr.target_branch, merge_request_id=str(mr.iid))
                 else:
                     p.retry()
                 import time
@@ -574,12 +725,11 @@ class ReleaseOrchestrator:
             return
             
         pipeline_success = False
-        for update in self.gitlab_manager.monitor_pipeline(project_name, pipeline_id=pipeline_id, debug=debug):
+        for update in self.pipeline_manager.monitor_pipeline(project_name, pipeline_id=pipeline_id, debug=debug):
             if isinstance(update, dict) and "pipeline_success" in update:
                 pipeline_success = update.get("pipeline_success", False)
-                if "telemetry" in update and audit_log:
-                    audit_log.job_details_json = update["telemetry"]
-                    if session: session.commit()
+                if "telemetry" in update and audit_log and sql_writer:
+                    sql_writer.update_git_release_audit_log(audit_log.id, job_details_json=update["telemetry"])
                 continue
             yield update
             
@@ -606,10 +756,8 @@ class ReleaseOrchestrator:
                 if mrs_merged:
                     mr = mrs_merged[0]
                     
-        if mr and audit_log and not audit_log.source_branch:
-            audit_log.source_branch = mr.source_branch
-            audit_log.target_branch = mr.target_branch
-            if session: session.commit()
+        if mr and audit_log and sql_writer and not audit_log.source_branch:
+            sql_writer.update_git_release_audit_log(audit_log.id, source_branch=mr.source_branch, target_branch=mr.target_branch, merge_request_id=str(mr.iid))
                 
         if not mr:
             yield {"success": True, "message": f"Pipeline #{pipeline_id} completed successfully. (No MR found to merge)."}
@@ -652,6 +800,7 @@ class ReleaseOrchestrator:
         yield "Pipeline merge complete!"
         
         target_version = "0.0.0"
+        changelog_data = []
         try:
             import yaml
             import base64
@@ -672,13 +821,55 @@ class ReleaseOrchestrator:
             slug = re.sub(r'[^a-z0-9]+', '-', mr.source_branch.lower()).strip('-')[:63]
             yield f"Retagging container from '{slug}' to '{target_version}'..."
             
-            retag_success, retag_msg = self.gitlab_manager.retag_container(project_name, slug, target_version)
+            retag_success, retag_msg = self.registry_manager.retag_container(project_name, slug, target_version)
             if not retag_success:
-                yield f"⚠️ Pipeline merge complete, but container retagging failed: {retag_msg}"
+                yield {"success": False, "message": f"Pipeline merge complete, but container retagging failed: {retag_msg}"}
+                return
+
+            yield f"Creating Git Tag '{target_version}' on '{mr.target_branch}'..."
+            tag_success, tag_msg = self.gitlab_manager.create_tag(project_name, target_version, mr.target_branch)
+            if not tag_success and "already exists" not in tag_msg.lower() and "400" not in tag_msg.lower():
+                yield {"success": False, "message": f"Failed to create Git tag: {tag_msg}"}
+                return
+            else:
+                if not tag_success:
+                    yield f"ℹ️ Git tag '{target_version}' already exists, proceeding to Release creation..."
+                yield f"Creating native GitLab Release for '{target_version}'..."
+                try:
+                    changelog_entry = changelog_data[0] if isinstance(changelog_data, list) and len(changelog_data) > 0 else {}
+                    release_desc = self._format_release_notes(target_version, changelog_entry)
+                    rel_success, rel_msg = self.gitlab_manager.create_release(project_name, target_version, release_desc)
+                    if not rel_success:
+                        yield {"success": False, "message": f"Failed to create GitLab Release: {rel_msg}"}
+                        return
+                    else:
+                        yield f"✅ GitLab Release '{target_version}' created successfully!"
+                except Exception as e:
+                    yield {"success": False, "message": f"Failed to format or create GitLab Release: {e}"}
+                    return
                 
-        if audit_log:
-            audit_log.status = "SUCCESS"
-            audit_log.version_tag = target_version
-            if session: session.commit()
+        if audit_log and sql_writer:
+            sql_writer.update_git_release_audit_log(audit_log.id, status="SUCCESS", version_tag=target_version)
+
+        yield "Syncing updated Git Inventory to database..."
+        try:
+            from core.managers.git_inventory_manager import GitInventoryManager
+            inv_manager = GitInventoryManager(self.config)
+            audit_mapping = {}
+            logs = sql_reader.get_successful_git_releases()
+            for log in logs:
+                if log.version_tag and log.project_name:
+                    if log.project_name not in audit_mapping:
+                        audit_mapping[log.project_name] = {}
+                    audit_mapping[log.project_name][log.version_tag] = log.source_branch
+            
+            result_json = inv_manager.fetch_git_inventory_graphql(project_path=project_name, audit_mapping=audit_mapping)
+            import json
+            data = json.loads(result_json)
+            sql_writer.upsert_git_inventory(data)
+            yield "✅ Git Inventory successfully synced."
+        except Exception as e:
+            logger.error(f"[GitRetry] Failed to sync inventory: {e}")
+            yield f"⚠️ Warning: Failed to sync git inventory: {e}"
                 
         yield {"success": True, "message": f"Retry and Release of MR !{mr.iid} completed successfully! ✅"}

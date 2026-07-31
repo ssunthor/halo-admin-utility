@@ -15,6 +15,39 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: '0.0.8'
+  date: '2026-07-30'
+  author: 'Martin Kecka'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Integrated native GitLab Releases creation into the `GitRelease` and `GitRetry` orchestration pipelines, automatically converting semantic YAML release notes into formatted Markdown.'
+        - 'Enhanced `hau git inventory` CLI to visually flag container tags that possess native GitLab documentation with a `[📜 Release Notes]` badge.'
+        - 'Updated `hau git audit` CLI to natively track and display the `merge_request_id` associated with every release and retry operation.'
+        - 'Added the `--author` override flag to `hau git retry` to ensure parity with the release command and accurate audit attribution.'
+        - 'Added `--project` target filtering to `hau git sync-inventory` CLI and underlying gRPC/GraphQL engine for scoped, high-speed inventory updates.'
+        - 'Integrated automatic database inventory synchronization as the final step of the `git release` and `git retry` workflows, ensuring instant UI visibility of new releases.'
+        - 'Added `--dry-run` execution mode to `hau git release` to safely simulate orchestration logic and LLM changelog generation without mutating GitLab state.'
+        - 'Added `hau git delete` CLI command and `GitDelete` gRPC endpoint to safely delete feature branches and container registry tags, complete with pre-deletion inventory safety checks and native audit logging.'
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Implemented cursor-based pagination (`afterCursor`) in the GitLab GraphQL inventory fetcher to permanently resolve the 250 node complexity limit crashes.'
+        - 'Expanded the Postgres database schema, adding `merge_request_id` to `git_release_audit_log` and `has_native_release` to `git_container`.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Implemented an idempotency safety check in `ReleaseOrchestrator` to automatically skip AI changelog generation if a pre-existing higher version is already committed to the source branch, preventing duplicate generation loops.'
+        - 'Fixed a `405 Method Not Allowed` race condition by forcing the pipeline manager to actively wait out GitLab MR `checking` and `preparing` validation states before triggering auto-merges.'
+        - 'Fixed a mapping bug in `SQLReader` where source feature names were displaying as `Unknown` due to a dictionary key mismatch between `project_name` and `project_path`.'
+        - 'Fixed a critical orchestration bug where downstream GitLab API failures (e.g., container retagging, release creation) during `git release` or `git retry` were swallowed, incorrectly marking the audit log as SUCCESS instead of FAILED.'
+    - category: '🧹 Refactoring & Chores'
+      items:
+        - 'Decoupled monolithic `GitlabManager` by extracting Docker V2 registry operations into a dedicated `ContainerRegistryManager`.'
+        - 'Decoupled CI/CD pipeline monitoring and Merge Request orchestration into a dedicated `GitPipelineManager`.'
+        - 'Refactored `ReleaseOrchestrator` to strictly utilize `SQLReader` and `SQLWriter` for database access, fully removing raw SQLAlchemy logic from the orchestrator layer.'
+        - 'Removed orphaned `fetch_container_tags` legacy method, fully deprecating real-time REST API scraping in favor of the `GitInventorySync` database engine.'
+        - 'Extracted `fetch_documentation` logic from the gRPC servicer into the `GitlabManager`.'
+        - 'Decoupled `SetTenantInternal` database logic from the gRPC layer into `SQLWriter`.'
+
 - version: '0.0.7'
   date: '2026-07-29'
   author: 'Martin Kecka'

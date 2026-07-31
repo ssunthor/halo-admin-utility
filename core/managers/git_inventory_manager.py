@@ -1,0 +1,301 @@
+import requests
+import json
+import concurrent.futures
+import gitlab
+import logging
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+logger = logging.getLogger(__name__)
+
+class GitInventoryManager:
+    def __init__(self, config):
+        self.config = config
+        if 'external_services' in self.config and 'gitlab' in self.config['external_services']:
+            self.url = self.config['external_services']['gitlab'].get('url')
+            self.token = self.config['external_services']['gitlab'].get('bot_token')
+        else:
+            self.url = None
+            self.token = None
+
+    def fetch_git_inventory_graphql(self, group_path="ai/halo", project_path=None, audit_mapping=None):
+        if not self.url or not self.token:
+            raise RuntimeError("GitLab config with URL and token is missing.")
+            
+        if audit_mapping is None:
+            audit_mapping = {}
+            
+        gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
+        url = f"{self.url.rstrip('/')}/api/graphql"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json"
+        }
+        
+        all_projects = []
+
+        if project_path:
+            query = """
+            query($projectPath: ID!) {
+              project(fullPath: $projectPath) {
+                id
+                name
+                fullPath
+                repository {
+                  branchNames(searchPattern: "*", offset: 0, limit: 50)
+                }
+                releases(first: 20, sort: RELEASED_AT_DESC) {
+                  nodes {
+                    tagName
+                  }
+                }
+                containerRepositories(first: 5) {
+                  nodes {
+                    id
+                    name
+                    tagsCount
+                  }
+                }
+              }
+            }
+            """
+            try:
+                response = requests.post(
+                    url, 
+                    json={"query": query, "variables": {"projectPath": project_path}}, 
+                    headers=headers,
+                    verify=False
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                if "errors" in data:
+                    logger.error(f"GraphQL returned errors: {data['errors']}")
+                    raise RuntimeError(f"GraphQL errors: {data['errors']}")
+                    
+                proj = data.get("data", {}).get("project")
+                if proj:
+                    all_projects.append(proj)
+            except Exception as e:
+                logger.error(f"Failed to fetch single project via GraphQL: {e}")
+                raise RuntimeError(f"Failed to fetch git inventory for project: {e}")
+
+        else:
+            query = """
+            query($groupPath: ID!, $afterCursor: String) {
+              group(fullPath: $groupPath) {
+                projects(includeSubgroups: true, first: 10, after: $afterCursor) {
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                  nodes {
+                    id
+                    name
+                    fullPath
+                    repository {
+                      branchNames(searchPattern: "*", offset: 0, limit: 50)
+                    }
+                    releases(first: 20, sort: RELEASED_AT_DESC) {
+                      nodes {
+                        tagName
+                      }
+                    }
+                    containerRepositories(first: 5) {
+                      nodes {
+                        id
+                        name
+                        tagsCount
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+            
+            try:
+                has_next_page = True
+                after_cursor = None
+                
+                while has_next_page:
+                    response = requests.post(
+                        url, 
+                        json={"query": query, "variables": {"groupPath": group_path, "afterCursor": after_cursor}}, 
+                        headers=headers,
+                        verify=False
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    if "errors" in data:
+                        logger.error(f"GraphQL returned errors: {data['errors']}")
+                        raise RuntimeError(f"GraphQL errors: {data['errors']}")
+                        
+                    group_data = data.get("data", {}).get("group")
+                    if not group_data:
+                        break
+                        
+                    projects_page = group_data.get("projects", {})
+                    all_projects.extend(projects_page.get("nodes", []))
+                    
+                    page_info = projects_page.get("pageInfo", {})
+                    has_next_page = page_info.get("hasNextPage", False)
+                    after_cursor = page_info.get("endCursor")
+            except Exception as e:
+                logger.error(f"Failed to fetch group projects via GraphQL: {e}")
+                raise RuntimeError(f"Failed to fetch git inventory for group: {e}")
+                
+        projects = all_projects
+        
+        def fetch_tag_list(proj_id_num, repo_id_num):
+            try:
+                res = requests.get(
+                    f"{self.url.rstrip('/')}/api/v4/projects/{proj_id_num}/registry/repositories/{repo_id_num}/tags?per_page=100",
+                    headers=headers, verify=False
+                )
+                if res.status_code == 200:
+                    return proj_id_num, repo_id_num, res.json()
+            except Exception:
+                pass
+            return proj_id_num, repo_id_num, []
+
+        def fetch_tag_detail(proj_id_num, repo_id_num, tag_name):
+            try:
+                res = requests.get(
+                    f"{self.url.rstrip('/')}/api/v4/projects/{proj_id_num}/registry/repositories/{repo_id_num}/tags/{tag_name}",
+                    headers=headers, verify=False
+                )
+                if res.status_code == 200:
+                    return res.json()
+            except Exception:
+                pass
+            return {"name": tag_name}
+            
+        def fetch_project_git_info(proj_id_num):
+            try:
+                project = gl.projects.get(proj_id_num)
+                active_branches = {b.name: b.commit['author_name'] for b in project.branches.list(get_all=True)}
+                active_git_tags = {gt.name: gt.commit['author_name'] for gt in project.tags.list(get_all=True)}
+                return proj_id_num, active_branches, active_git_tags
+            except Exception:
+                return proj_id_num, {}, {}
+            
+        fetch_tasks = {}
+        git_info_tasks = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            for p in projects:
+                proj_id = p.get('id', '').split('/')[-1]
+                git_info_tasks[executor.submit(fetch_project_git_info, proj_id)] = proj_id
+                for c in p.get('containerRepositories', {}).get('nodes', []):
+                    if c.get('tagsCount', 0) > 0:
+                        repo_id = c.get('id', '').split('/')[-1]
+                        fetch_tasks[executor.submit(fetch_tag_list, proj_id, repo_id)] = c.get('id')
+                        
+            project_git_infos = {}
+            for future in concurrent.futures.as_completed(git_info_tasks):
+                proj_id, active_branches, active_git_tags = future.result()
+                project_git_infos[proj_id] = (active_branches, active_git_tags)
+
+            repo_tags = {}
+            for future in concurrent.futures.as_completed(fetch_tasks):
+                c_id = fetch_tasks[future]
+                proj_id, repo_id, tags = future.result()
+                repo_tags[c_id] = (proj_id, repo_id, tags)
+        
+        detail_tasks = {}
+        tag_results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            for c_id, (proj_id, repo_id, tags) in repo_tags.items():
+                tag_results[c_id] = []
+                for t in tags:
+                    tag_name = t.get('name')
+                    if tag_name:
+                        future = executor.submit(fetch_tag_detail, proj_id, repo_id, tag_name)
+                        detail_tasks[future] = c_id
+                        
+            for future in concurrent.futures.as_completed(detail_tasks):
+                c_id = detail_tasks[future]
+                tag_results[c_id].append(future.result())
+        
+        result = []
+        for p in projects:
+            proj_id = p.get('id', '').split('/')[-1]
+            active_branches, active_git_tags = project_git_infos.get(proj_id, ({}, {}))
+            native_release_tags = {r.get('tagName') for r in p.get('releases', {}).get('nodes', []) if r.get('tagName')}
+            
+            if active_branches:
+                branch_list = [{"name": b, "author": auth} for b, auth in active_branches.items()]
+            else:
+                branch_list = [
+                    {"name": b, "author": "Unknown"}
+                    for b in (p.get("repository", {}).get("branchNames", []) if p.get("repository") else [])
+                ]
+                
+            proj_info = {
+                "name": p.get("name"),
+                "fullPath": p.get("fullPath"),
+                "branches": branch_list,
+                "containers": []
+            }
+            
+            containers = p.get("containerRepositories", {}).get("nodes", []) if p.get("containerRepositories") else []
+            for c in containers:
+                c_name = c.get("name", "")
+                c_id = c.get("id")
+                
+                tags = tag_results.get(c_id, [])
+                try:
+                    tags = sorted(tags, key=lambda x: x.get('created_at', ''), reverse=True)
+                except Exception:
+                    pass
+                    
+                enriched_tags = []
+                for t in tags:
+                    t_name = t.get("name")
+                    source_branch = "N/A"
+                    author = "Unknown"
+                    branch_exists = False
+                    is_git_tag = False
+                    
+                    for b_name, b_author in active_branches.items():
+                        if t_name == b_name or t_name == b_name.replace('/', '-'):
+                            source_branch = b_name
+                            author = b_author
+                            branch_exists = True
+                            break
+                            
+                    if not branch_exists:
+                        for gt_name, gt_author in active_git_tags.items():
+                            if t_name == gt_name or t_name == gt_name.replace('/', '-'):
+                                is_git_tag = True
+                                author = gt_author
+                                break
+                                
+                    full_path = p.get("fullPath")
+                    if full_path in audit_mapping and t_name in audit_mapping[full_path]:
+                        audit_source = audit_mapping[full_path][t_name]
+                        source_branch = audit_source
+                        if audit_source in active_branches:
+                            branch_exists = True
+                            author = active_branches[audit_source]
+                            
+                    enriched_tags.append({
+                        "name": t_name, 
+                        "created_at": t.get("created_at"),
+                        "source_branch": source_branch,
+                        "branch_exists": branch_exists,
+                        "is_git_tag": is_git_tag,
+                        "has_native_release": t_name in native_release_tags,
+                        "author": author
+                    })
+                    
+                proj_info["containers"].append({
+                    "name": c_name,
+                    "tags": enriched_tags
+                })
+                
+            result.append(proj_info)
+            
+        return json.dumps({"projects": result})

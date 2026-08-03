@@ -2,7 +2,7 @@ from cli.utils import print_grpc_json, handle_grpc_errors
 import click
 import json
 
-@click.group(name="module")
+@click.group(name="module", context_settings=dict(max_content_width=300, terminal_width=300))
 def module_cli():
     """Module-specific commands (Info, Health)"""
     pass

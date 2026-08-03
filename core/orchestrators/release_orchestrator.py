@@ -256,7 +256,11 @@ class ReleaseOrchestrator:
                 merge_res = subprocess.run(['git', 'merge', f'origin/{target_branch}', '-m', f"Auto-sync from {target_branch} [skip ci]"], cwd=repo_local_path, capture_output=True, text=True)
                 if merge_res.returncode != 0:
                     subprocess.run(['git', 'merge', '--abort'], cwd=repo_local_path)
-                    err_msg = f"Merge conflict detected locally while syncing '{target_branch}' into '{source_branch}'. Please resolve locally and push."
+                    stderr_output = merge_res.stderr.strip() or merge_res.stdout.strip()
+                    if "not something we can merge" in stderr_output.lower():
+                        err_msg = f"Branch '{target_branch}' does not exist on origin. Please create it first. Git output: {stderr_output}"
+                    else:
+                        err_msg = f"Merge failed locally while syncing '{target_branch}' into '{source_branch}'. Git output: {stderr_output}. Please resolve locally and push."
                     logger.error(f"[GitRelease] {err_msg}")
                     yield {"success": False, "message": err_msg}
                     return
@@ -491,16 +495,20 @@ class ReleaseOrchestrator:
             yield "Waiting for MR pipeline to pass before merge..."
             
             pipeline_success = False
+            pipeline_status = "failed"
             for update in self.pipeline_manager.monitor_pipeline(project_name, mr_iid=mr_iid, debug=debug):
-                if isinstance(update, dict) and "pipeline_success" in update:
-                    pipeline_success = update.get("pipeline_success", False)
+                if isinstance(update, dict):
+                    if "pipeline_success" in update:
+                        pipeline_success = update.get("pipeline_success", False)
+                        pipeline_status = update.get("pipeline_status", "failed")
                     if "telemetry" in update and audit_log and sql_writer:
                         sql_writer.update_git_release_audit_log(audit_log.id, job_details_json=update["telemetry"])
-                    continue
+                    if "pipeline_success" in update or update.get("is_intermediate"):
+                        continue
                 yield update
 
             if not pipeline_success:
-                err_msg = "MR pipeline failed or was canceled. Aborting release."
+                err_msg = f"MR pipeline {pipeline_status}. Aborting release."
                 logger.error(f"[GitRelease] {err_msg}")
                 yield {"success": False, "message": err_msg}
                 return
@@ -725,16 +733,20 @@ class ReleaseOrchestrator:
             return
             
         pipeline_success = False
+        pipeline_status = "failed"
         for update in self.pipeline_manager.monitor_pipeline(project_name, pipeline_id=pipeline_id, debug=debug):
-            if isinstance(update, dict) and "pipeline_success" in update:
-                pipeline_success = update.get("pipeline_success", False)
+            if isinstance(update, dict):
+                if "pipeline_success" in update:
+                    pipeline_success = update.get("pipeline_success", False)
+                    pipeline_status = update.get("pipeline_status", "failed")
                 if "telemetry" in update and audit_log and sql_writer:
                     sql_writer.update_git_release_audit_log(audit_log.id, job_details_json=update["telemetry"])
-                continue
+                if "pipeline_success" in update or update.get("is_intermediate"):
+                    continue
             yield update
             
         if not pipeline_success:
-            yield {"success": False, "message": f"Pipeline #{pipeline_id} failed. Retry aborted."}
+            yield {"success": False, "message": f"Pipeline #{pipeline_id} {pipeline_status}. Retry aborted."}
             return
             
         mr = None

@@ -161,9 +161,25 @@ class GitPipelineManager:
                         yield f"  ▶️ Job '{job.name}' (Stage: {job.stage}) is now RUNNING..."
                     job_states[job.name] = job.status
                     
+
                 if job.status in ['running', 'pending']:
                     active_jobs += 1
                             
+            current_telemetry = {"jobs": []}
+            for j in jobs:
+                job_dur = getattr(j, 'duration', None)
+                if j.status == 'running' and j.name in job_start_times:
+                    job_dur = time.time() - job_start_times[j.name]
+                current_telemetry["jobs"].append({
+                    "id": j.id,
+                    "name": j.name,
+                    "stage": j.stage,
+                    "status": j.status,
+                    "duration": job_dur,
+                    "web_url": getattr(j, 'web_url', None)
+                })
+            yield {"is_intermediate": True, "telemetry": current_telemetry}
+            
             if active_jobs == 0 and not debug:
                 yield f"Pipeline Status: {pipeline.status.upper()} (Transitioning stages or finalizing...)"
                 
@@ -269,4 +285,4 @@ class GitPipelineManager:
                         yield f"      (Could not fetch trace: {e})"
                 telemetry["jobs"].append(job_data)
                 
-            yield {"pipeline_success": False, "pipeline_id": pipeline.id, "telemetry": telemetry}
+            yield {"pipeline_success": False, "pipeline_id": pipeline.id, "pipeline_status": pipeline.status, "telemetry": telemetry}

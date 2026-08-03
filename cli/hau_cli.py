@@ -32,7 +32,7 @@ class NestedHelpGroup(click.Group):
             with formatter.section('Commands'):
                 formatter.write_dl(rows)
 
-@click.group(cls=NestedHelpGroup)
+@click.group(cls=NestedHelpGroup, context_settings=dict(max_content_width=300, terminal_width=300))
 @click.pass_context
 def cli(ctx):
     """HAU CLI"""

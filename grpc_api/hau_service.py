@@ -3,6 +3,8 @@ import functools
 import json
 import os
 import subprocess
+import re
+import threading
 from contextlib import contextmanager
 
 import hau_pb2
@@ -265,9 +267,10 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         orchestrator = ChangelogOrchestrator(config=self.config)
         start_version = request.start_version if request.start_version else "0.1.0"
         start_commit = request.start_commit if request.start_commit else None
+        start_date = request.start_date if request.start_date else None
         
         try:
-            for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version, start_commit):
+            for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version, start_commit, start_date):
                 if isinstance(item, dict) and "final_yaml" in item:
                     yield hau_pb2.GitBackfillResponse(
                         success=True,
@@ -457,6 +460,77 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         except Exception as e:
             logger.error(f"Failed to fetch documentation for {request.project_name}: {e}")
             return hau_pb2.GetDocumentationResponse(success=False, message=str(e))
+
+    def _sync_halo_cache(self):
+        try:
+            cache_dir = os.path.join(self.config.get("paths", {}).get("git_cache_dir", "/ai/utilities/halo_admin_utility/cache"), "halo", "deployment")
+            import subprocess
+            subprocess.run(["git", "pull", "origin", "main"], cwd=cache_dir, check=True)
+            logger.info("Successfully synced halo documentation cache.")
+        except Exception as e:
+            logger.error(f"Background git pull failed in {cache_dir}: {e}")
+
+    @handle_rpc(hau_pb2.GetHaloDocumentationTreeResponse)
+    def GetHaloDocumentationTree(self, request, context):
+        try:
+            cache_dir = os.path.join(self.config.get("paths", {}).get("git_cache_dir", "/ai/utilities/halo_admin_utility/cache"), "halo", "deployment", "docs")
+            docs_list = []
+            
+            if os.path.exists(cache_dir):
+                for root, _, files in os.walk(cache_dir):
+                    for file in files:
+                        if file.endswith('.md'):
+                            full_path = os.path.join(root, file)
+                            rel_path = os.path.relpath(full_path, cache_dir)
+                            project_name = rel_path.split(os.sep)[0] if os.sep in rel_path else "unknown"
+                            with open(full_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            
+                            # Parse frontmatter
+                            metadata = {
+                                "doc_type": "Unknown",
+                                "category": "Unknown",
+                                "name": file,
+                                "acronym": "",
+                                "version": "",
+                                "author": "",
+                                "status": "",
+                                "date": ""
+                            }
+                            
+                            for line in content.split('\n')[:30]:
+                                match = re.match(r'\*\*([A-Za-z_]+):\*\*\s*(.*)', line)
+                                if match:
+                                    key, value = match.groups()
+                                    key_lower = key.lower()
+                                    if key_lower in metadata:
+                                        metadata[key_lower] = value.strip()
+                            
+                            doc_msg = hau_pb2.HaloDocument(
+                                filename=file,
+                                raw_markdown=content,
+                                doc_type=metadata["doc_type"],
+                                category=metadata["category"],
+                                name=metadata["name"],
+                                acronym=metadata["acronym"],
+                                version=metadata["version"],
+                                author=metadata["author"],
+                                status=metadata["status"],
+                                date=metadata["date"],
+                                relative_path=rel_path,
+                                project_name=project_name
+                            )
+                            docs_list.append(doc_msg)
+            else:
+                logger.warning(f"Halo docs cache dir not found at {cache_dir}")
+
+            # Fire and forget cache sync
+            threading.Thread(target=self._sync_halo_cache).start()
+            
+            return hau_pb2.GetHaloDocumentationTreeResponse(success=True, message="Fetched halo docs tree", documents=docs_list)
+        except Exception as e:
+            logger.error(f"Failed to fetch halo documentation tree: {e}")
+            return hau_pb2.GetHaloDocumentationTreeResponse(success=False, message=str(e))
 
     @handle_rpc(hau_pb2.GitDeleteResponse)
     def GitDelete(self, request, context):

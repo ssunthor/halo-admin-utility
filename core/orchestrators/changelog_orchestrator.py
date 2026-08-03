@@ -176,7 +176,7 @@ class ChangelogOrchestrator:
             logger.error(f"Failed to generate changelog: {e}")
             raise e
 
-    def run_backfill(self, repo_local_path: str, branch: str, start_version: str = "0.1.0", start_commit: str = None):
+    def run_backfill(self, repo_local_path: str, branch: str, start_version: str = "0.1.0", start_commit: str = None, start_date: str = None):
         yield f"Analyzing git history for on branch '{branch}'..."
         
         result = subprocess.run(
@@ -213,7 +213,11 @@ class ChangelogOrchestrator:
             days[date_str]['commits'].append(commit_hash)
             days[date_str]['author'] = author
 
-        yield f"Found {len(ordered_days)} unique days of activity."
+        if start_date:
+            ordered_days = [d for d in ordered_days if d >= start_date]
+            yield f"Filtering for days >= {start_date}. {len(ordered_days)} days to process."
+        else:
+            yield f"Found {len(ordered_days)} unique days of activity."
         
         def get_next_version(current_version):
             parts = current_version.split('.')

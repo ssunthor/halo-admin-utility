@@ -2,7 +2,7 @@ import click
 import json
 from cli.utils import print_grpc_json, handle_grpc_errors, get_hau_stub
 
-@click.group(name='git')
+@click.group(name='git', context_settings=dict(max_content_width=300, terminal_width=300))
 def git_cli():
     """Git workspace and repository operations."""
     pass
@@ -436,8 +436,9 @@ def git_audit(ctx, id, repo, as_grpc):
                         dur = f"{j.get('duration', 0):.1f}s" if j.get('duration') else "N/A"
                         click.echo(f"  - {j.get('name'):<25} | {click.style(f'{j_status:<10}', fg=jc)} | {dur:<8} | {j.get('stage')}")
                         if j.get('trace'):
-                            click.secho(f"    --- Last 15 lines of Trace ---", fg='red')
-                            for tline in j.get('trace', [])[-15:]:
+                            num_lines = min(len(j.get('trace', [])), 50)
+                            click.secho(f"    --- Last {num_lines} lines of Trace ---", fg='red')
+                            for tline in j.get('trace', [])[-50:]:
                                 click.secho(f"      {tline}", fg='red', dim=True)
         else:
             click.secho(f"{'ID':<8} | {'Project':<35} | {'Version':<11} | {'MR':<5} | {'Action':<11} | {'Actor':<15} | {'Path (Src->Tgt)':<25} | {'Status':<10} | {'Method':<18} | {'Date'}", fg='cyan', bold=True)

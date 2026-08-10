@@ -66,11 +66,11 @@ def list_inventory(ctx, tenant, as_grpc):
                 continue
                 
             for location, details in clusters.items():
-                env = details.get('environment', 'unknown')
-                internal = "INTERNAL" if details.get('is_internal') else "EXTERNAL"
+                tier = details.get('tenant_tier', 'UNKNOWN')
+                category = details.get('tenant_category', 'CUSTOMER')
                 url = details.get('url')
                 url_str = f" [{url}]" if url else ""
-                click.secho(f"\n  ► CLUSTER: {location.upper()} [{env.upper()}] [{internal}]{url_str}", fg='blue', bold=True)
+                click.secho(f"\n  ► CLUSTER: {location.upper()} [{tier.upper()}] [{category}]{url_str}", fg='blue', bold=True)
                 
                 resources = details.get('resources', {})
                 for kind, items in resources.items():
@@ -86,21 +86,36 @@ def list_inventory(ctx, tenant, as_grpc):
         click.echo(f"❌ Failed: {resp.message}")
         sys.exit(1)
 
-@inventory_cli.command(name='set-internal')
+@inventory_cli.command(name='update-customization')
 @click.argument('tenant_slug')
-@click.argument('is_internal', type=click.BOOL)
+@click.option('--category', help='Tenant category (e.g. INTERNAL, CUSTOMER)')
+@click.option('--tier', help='Tenant tier (e.g. SANDBOX, PRODUCTION)')
+@click.option('--policy', help='Update policy (e.g. MANUAL_ONLY)')
+@click.option('--owner', help='Owner of the tenant')
+@click.option('--purpose', help='Purpose of the tenant')
+@click.option('--maintenance-window', help='Maintenance window')
+@click.option('--config-payload', help='JSON string for configuration payload')
 @click.pass_context
 @handle_grpc_errors
-def set_internal(ctx, tenant_slug, is_internal):
-    """Manually override a tenant's internal flag."""
+def update_customization(ctx, tenant_slug, category, tier, policy, owner, purpose, maintenance_window, config_payload):
+    """Manually update a tenant's customization fields."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
     if not stub:
         click.echo("[FATAL] Could not connect to gRPC server.")
         return
         
-    req = hau_pb2.SetTenantInternalRequest(tenant_slug=tenant_slug, is_internal=is_internal)
-    resp = stub.SetTenantInternal(req)
+    req = hau_pb2.UpdateTenantCustomizationRequest(
+        tenant_slug=tenant_slug,
+        tenant_category=category or "",
+        tenant_tier=tier or "",
+        update_policy=policy or "",
+        owner=owner or "",
+        purpose=purpose or "",
+        maintenance_window=maintenance_window or "",
+        configuration_payload=config_payload or ""
+    )
+    resp = stub.UpdateTenantCustomization(req)
     
     if resp.success:
         click.echo(f"✅ {resp.message}")

@@ -34,29 +34,29 @@ class HaloTenant(Base):
     slug_name = Column(String(255), nullable=False, unique=True)
     target_cluster = Column(String(50), nullable=False)
     halo_version = Column(String(50), nullable=True)
-    environment = Column(String(50), nullable=True)
-    is_internal = Column(Boolean, default=False)
-    is_internal_overridden = Column(Boolean, default=False)
     url = Column(String(255), nullable=True)
     lifecycle_state = Column(SQLEnum(LifecycleState), default=LifecycleState.ONBOARDING)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    feature_flags = relationship("TenantFeatureFlag", back_populates="tenant", cascade="all, delete-orphan")
+    customization = relationship("TenantCustomization", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     collectors = relationship("CollectorInventory", back_populates="tenant", cascade="all, delete-orphan")
     deployment_logs = relationship("DeploymentAuditLog", back_populates="tenant", cascade="all, delete-orphan")
     resources = relationship("TenantResourceInventory", back_populates="tenant", cascade="all, delete-orphan")
 
-class TenantFeatureFlag(Base):
-    __tablename__ = 'tenant_feature_flag'
+class TenantCustomization(Base):
+    __tablename__ = 'tenant_customization'
     
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    tenant_id = Column(String(36), ForeignKey('halo_tenant.id'), nullable=False)
-    feature_key = Column(String(255), nullable=False)
-    is_enabled = Column(Boolean, default=False)
-    custom_value = Column(String(255), nullable=True)
+    tenant_id = Column(String(36), ForeignKey('halo_tenant.id'), primary_key=True)
+    tenant_category = Column(String(50), default="CUSTOMER")
+    tenant_tier = Column(String(50), default="UNKNOWN")
+    update_policy = Column(String(50), default="MANUAL_ONLY")
+    owner = Column(String(255), default="UNASSIGNED")
+    purpose = Column(String(255), nullable=True)
+    maintenance_window = Column(String(255), nullable=True)
+    configuration_payload = Column(JSON, default=dict)
 
-    tenant = relationship("HaloTenant", back_populates="feature_flags")
+    tenant = relationship("HaloTenant", back_populates="customization")
 
 class CollectorInventory(Base):
     __tablename__ = 'collector_inventory'
@@ -146,6 +146,7 @@ class GitBranch(Base):
     project_id = Column(String(36), ForeignKey('git_project.id'), nullable=False)
     name = Column(String(255), nullable=False)
     author = Column(String(255), nullable=True)
+    last_updated_at = Column(DateTime, nullable=True)
     
     project = relationship("GitProject", back_populates="branches")
 

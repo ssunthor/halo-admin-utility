@@ -90,7 +90,7 @@ class SeraStandardServiceImpl(sera_standard_pb2_grpc.SeraAppServiceServicer):
             description=self.module_info.get('description', 'unknown'),
             services=services,
             downstream_dependencies=deps,
-            custom_metadata={"sera_standard": "v1-universal"}
+            custom_metadata={"sera_standard": "v1.1-universal"}
         )
 
         llm_config = self.config.get("llm_engines", {})
@@ -213,6 +213,32 @@ class SeraStandardServiceImpl(sera_standard_pb2_grpc.SeraAppServiceServicer):
                 db_dep.connection_metadata["read_host"] = str(r_host) if r_host else "unknown"
                 db_dep.connection_metadata["read_sanitized_dsn"] = sanitize_dsn(read_dsn)
             response.dependency_health_matrix.append(db_dep)
+
+        # Process any additional DSNs (e.g., caa_dsn)
+        for k, v in db_config.items():
+            if k not in ['write_dsn', 'read_dsn'] and k.endswith('_dsn') and v:
+                db_prefix = k.replace('_dsn', '')
+                d_host, d_port = get_host_port_from_url(v)
+                
+                status = "OK"
+                details = "Connected"
+                d_status, d_det = check_tcp_ping(d_host, d_port) if d_host else ("OK", "Connected")
+                
+                if d_status == "DOWN":
+                    status = "DOWN"
+                    details = "Database Unreachable"
+                    
+                extra_dep = sera_standard_pb2.DependencyHealth(
+                    dependency_name=f"{db_prefix}_db",
+                    status=status,
+                    details=details,
+                    dependency_type="postgresql",
+                    dependency_group="infra"
+                )
+                extra_dep.connection_metadata["host"] = str(d_host) if d_host else "unknown"
+                extra_dep.connection_metadata["database"] = get_db_name(v)
+                extra_dep.connection_metadata["sanitized_dsn"] = sanitize_dsn(v)
+                response.dependency_health_matrix.append(extra_dep)
             
         # Connectors
         for conn_name, conn_data in self.config.get('connectors', {}).items():

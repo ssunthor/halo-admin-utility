@@ -20,7 +20,7 @@ service HauService {
   rpc GetDocumentation(GetDocumentationRequest) returns (GetDocumentationResponse);
   rpc GetHaloDocumentationTree(GetHaloDocumentationTreeRequest) returns (GetHaloDocumentationTreeResponse);
   rpc GitInventorySync(GitInventorySyncRequest) returns (GitInventorySyncResponse);
-  rpc SetTenantInternal(SetTenantInternalRequest) returns (SetTenantInternalResponse);
+  rpc UpdateTenantCustomization(UpdateTenantCustomizationRequest) returns (UpdateTenantCustomizationResponse);
   rpc GitDelete(GitDeleteRequest) returns (GitDeleteResponse);
 }
 
@@ -41,12 +41,18 @@ message InventoryListResponse {
   string result_json = 3;
 }
 
-message SetTenantInternalRequest {
+message UpdateTenantCustomizationRequest {
   string tenant_slug = 1;
-  bool is_internal = 2;
+  string tenant_category = 2;
+  string tenant_tier = 3;
+  string update_policy = 4;
+  string owner = 5;
+  string purpose = 6;
+  string maintenance_window = 7;
+  string configuration_payload = 8;
 }
 
-message SetTenantInternalResponse {
+message UpdateTenantCustomizationResponse {
   bool success = 1;
   string message = 2;
 }
@@ -61,6 +67,7 @@ message GitContainersResponse {
 
 message GitSyncRequest {
   string target = 1;
+  string branch = 2;
 }
 
 message GitSyncResponse {

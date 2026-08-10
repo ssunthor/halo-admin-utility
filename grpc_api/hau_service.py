@@ -103,6 +103,23 @@ class DependencyProviderMixin:
 class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixin):
     def __init__(self, config):
         self.config = config
+        
+        # Initialize Vault client and fetch Rancher tokens
+        self.vault_client = None
+        if 'vault_paths' in config and 'rancher_system' in config['vault_paths']:
+            try:
+                from core.clients.vault_client import VaultClient
+                self.vault_client = VaultClient(config['external_services']['vault'])
+                path = config['vault_paths']['rancher_system']
+                clusters = self.vault_client.get_rancher_tokens(path=path)
+                if clusters:
+                    for region, data in clusters.items():
+                        if region in self.config.get('rancher_clusters', {}):
+                            self.config['rancher_clusters'][region].update(data)
+                    logger.info("Successfully loaded Rancher cluster tokens from Vault on startup.")
+            except Exception as e:
+                logger.error(f"Failed to load Rancher tokens from Vault: {e}")
+
         from core.managers.gitlab_manager import GitlabManager
         if 'external_services' in config and 'gitlab' in config['external_services']:
             self.gitlab_manager = GitlabManager(config['external_services']['gitlab'])
@@ -134,7 +151,8 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             local_path = os.path.join(local_base, 'gitlab-ci-templates')
             result = self.gitlab_manager.sync_local_repo(project_path, local_path)
         else:
-            result = self.gitlab_manager.sync_group_cache()
+            branch_override = getattr(request, 'branch', None)
+            result = self.gitlab_manager.sync_group_cache(branch_override=branch_override)
             
         return hau_pb2.GitSyncResponse(success=True, message=result)
 
@@ -169,7 +187,7 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 return hau_pb2.InventorySyncResponse(success=False, message="Database configuration is missing.")
             
             sql_writer = SQLWriter(session)
-            orchestrator = InventoryOrchestrator(self.config, sql_writer)
+            orchestrator = InventoryOrchestrator(self.config, sql_writer, vault_client=self.vault_client)
             orchestrator.sync_inventory()
             
             return hau_pb2.InventorySyncResponse(success=True, message="Inventory sync complete.")
@@ -185,15 +203,24 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             
             return hau_pb2.InventoryListResponse(success=True, message="Fetched inventory", result_json=json.dumps(result))
 
-    @handle_rpc(hau_pb2.SetTenantInternalResponse)
-    def SetTenantInternal(self, request, context):
+    @handle_rpc(hau_pb2.UpdateTenantCustomizationResponse)
+    def UpdateTenantCustomization(self, request, context):
         with self._get_db_session(write=True) as session:
             if not session:
-                return hau_pb2.SetTenantInternalResponse(success=False, message="Database configuration is missing.")
+                return hau_pb2.UpdateTenantCustomizationResponse(success=False, message="Database configuration is missing.")
             
             sql_writer = SQLWriter(session)
-            success, message = sql_writer.set_tenant_internal_flag(request.tenant_slug, request.is_internal)
-            return hau_pb2.SetTenantInternalResponse(success=success, message=message)
+            kwargs = {
+                "tenant_category": getattr(request, 'tenant_category', ""),
+                "tenant_tier": getattr(request, 'tenant_tier', ""),
+                "update_policy": getattr(request, 'update_policy', ""),
+                "owner": getattr(request, 'owner', ""),
+                "purpose": getattr(request, 'purpose', ""),
+                "maintenance_window": getattr(request, 'maintenance_window', ""),
+                "configuration_payload": getattr(request, 'configuration_payload', ""),
+            }
+            success, message = sql_writer.update_tenant_customization(request.tenant_slug, **kwargs)
+            return hau_pb2.UpdateTenantCustomizationResponse(success=success, message=message)
 
     @handle_rpc(hau_pb2.GenerateChangelogResponse)
     def GenerateChangelog(self, request, context):
@@ -378,16 +405,22 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             return hau_pb2.GitInventorySyncResponse(success=False, message="GitLab configuration is missing.")
             
         try:
-            audit_mapping = {}
+            audit_mapping = {'tags': {}, 'branches': {}}
             with self._get_db_session(write=False) as session:
                 if session:
                     reader = SQLReader(session)
                     logs = reader.get_successful_git_releases()
                     for log in logs:
-                        if log.version_tag and log.project_name:
-                            if log.project_name not in audit_mapping:
-                                audit_mapping[log.project_name] = {}
-                            audit_mapping[log.project_name][log.version_tag] = log.source_branch
+                        if log.project_name:
+                            if log.project_name not in audit_mapping['tags']:
+                                audit_mapping['tags'][log.project_name] = {}
+                            if log.project_name not in audit_mapping['branches']:
+                                audit_mapping['branches'][log.project_name] = {}
+                            
+                            if log.version_tag and log.version_tag not in audit_mapping['tags'][log.project_name]:
+                                audit_mapping['tags'][log.project_name][log.version_tag] = log.source_branch
+                            if log.target_branch and log.target_branch not in audit_mapping['branches'][log.project_name]:
+                                audit_mapping['branches'][log.project_name][log.target_branch] = log.actor
 
                     project_name = request.project_name if request.project_name else None
                     if project_name:
@@ -555,7 +588,7 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             sql_writer = SQLWriter(session)
             
             logger.info("Syncing inventory before deletion checks...")
-            orchestrator = InventoryOrchestrator(self.config, sql_writer)
+            orchestrator = InventoryOrchestrator(self.config, sql_writer, vault_client=self.vault_client)
             orchestrator.sync_inventory()
             
             from core.database.models import GitProject

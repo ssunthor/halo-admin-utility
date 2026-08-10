@@ -30,27 +30,26 @@ The repository operates on a GitOps-based workflow, serving both as the source c
     │   └── netflow-dfp/  # Component architecture docs (e.g. ndfp_design.md)
     │
     ├── infrastructure/   # Global/Regional shared infrastructure components
+    │   ├── collectors/   # Edge collector provisioning and configuration
+    │   ├── metallb/      # MetalLB Layer 2 load balancer IP pools & L2 advertisements
     │   ├── netapp/       # NetApp Trident configurations (ukslo-naclu01, usnyh-naclu01)
-    │   ├── kafka/        # Strimzi Kafka cluster definitions
     │   └── netbox/       # Rancher Helm configurations for Netbox deployments
     │
-    ├── morpheus_runtime/ # Global AI runtime deployments
-    │   ├── triton-daemonset.yaml
-    │   ├── morpheus-netflow-deployment.yaml
-    │   └── morpheus-logs-deployment.yaml
-    │
-    ├── collectors/       # Edge collector provisioning and configuration
-    │   ├── cloud-init-user-data
-    │   ├── docker-compose.yml
-    │   ├── fluent-bit-conf/
-    │   └── setup.sh
-    │
     ├── base/             # Kustomize base templates shared globally
-    │   ├── backend/
-    │   ├── frontend/
-    │   ├── ingress/
-    │   ├── oauth2-proxy/ # Contains the template oauth2_proxy.yaml
-    │   └── redis/        
+    │   ├── halo/         # HALO-specific applications
+    │   │   ├── backend/
+    │   │   ├── dashboard/
+    │   │   ├── ingest/   # e.g., syslog-fluent-bit
+    │   │   └── pipelines/# AI Inference Pipelines
+    │   │       ├── forti-dfp/
+    │   │       ├── netflow-dfp/
+    │   │       ├── syslog-dfp/
+    │   │       └── storage/      # Shared automated storage base (PVCs)
+    │   └── vendor/       # Third-party standard components
+    │       ├── kafka/        # Strimzi Kafka cluster definitions
+    │       ├── oauth2-proxy/ # Contains the template oauth2_proxy.yaml
+    │       ├── redis/        
+    │       └── triton/       # Triton DaemonSet AI Runtime
     │
     └── tenants/          # The Geolocation Routing Layer (Tenant Deployments)
         ├── slo/          # SLO Region
@@ -58,25 +57,26 @@ The repository operates on a GitOps-based workflow, serving both as the source c
         │   │   ├── kustomization.yaml
         │   │   └── oauth2_proxy.yaml
         │   ├── halo-corp/
-        │   │   ├── kustomization.yaml
-        │   │   ├── ingress.yaml           # e.g., corp.defensehalo.ai -> oauth_proxy
-        │   │   ├── oauth2_proxy.yaml      # Customer-specific Keycloak realm config
-        │   │   ├── firewall-pipeline.yaml
-        │   │   └── syslog-pipeline.yaml
         │   ├── halo-demo/
         │   ├── halo-dev/
         │   └── halo-gtt3d0/
-        │       └── kafka-cluster.yaml
-        └── nyc/          # NYC Region
-            └── halo-acme/
-```
+        │       ├── app/
+        │       │   └── kustomization.yaml
+        │       └── gpu/
+        │           ├── kustomization.yaml
+        │           ├── storage/
+        │           ├── forti-dfp/
+        │           ├── netflow-dfp/
+        │           └── syslog-dfp/
+        │   ├── halo-demo/
+        │   ├── halo-dev/
 
 ## 2. Component Guidelines
 
 ### Kubernetes Annotations (Routing & Provenance)
 To ensure HAU knows where to deploy resources and to maintain strict GitOps provenance, all Kubernetes manifests (or their `kustomization.yaml`) must include the following metadata annotations:
 * `halo/target-cluster`: Specifies the exact destination cluster name (e.g., `slo-hal-clu01` or `slo-aif-nvclu01`). Since the cluster name intrinsically contains the geographic location prefix (`slo`, `prg`, `nyc`), this explicitly resolves both the workload type (halo vs gpu) and the regional routing in a single variable.
-* `halo/source-file`: The relative path in GitLab to the file that generated this resource (e.g., `deploy/morpheus_runtime/triton-daemonset.yaml`).
+* `halo/source-file`: The relative path in GitLab to the file that generated this resource (e.g., `deployment/base/vendor/triton/triton-daemonset.yaml`).
 
 HAU will parse these annotations during the deployment phase to determine the correct Kubernetes context to target, providing a decoupled, self-describing deployment model.
 
@@ -85,22 +85,27 @@ HAU will parse these annotations during the deployment phase to determine the co
 * Governed by `.gitlab-ci.yml`. When code is merged, GitLab CI automatically builds the container images and pushes them to the GitLab Container Registry.
 * Example: `pipelines/netflow-dfp/` has its own CI to build and push the `netflow-dfp` container to the registry.
 
-### Infrastructure (`deploy/infrastructure`)
-* **Kafka:** Uses the Strimzi operator. YAML files define the Kafka cluster CRD, node pools, and listeners.
+### Infrastructure (`deployment/infrastructure`)
 * **Netbox:** Integrates via Helm. Contains the `HelmChart` configurations pointing to the Rancher Helm repository with custom HALO value overrides.
-* **NetApp:** Contains Trident storage class overrides and backend configurations.
+* **NetApp:** Contains Trident storage class overrides and backend configurations for NetApp provisioning.
+* **MetalLB:** Contains Layer 2 IP address pools and advertisements for local bare-metal load balancing.
+* **Collectors:** Edge collector provisioning templates (`docker-compose`, `fluent-bit`).
 
-### AI Runtime (`deploy/morpheus_runtime`)
+### AI Runtime (`deployment/morpheus_runtime`)
 * **Triton:** Defined as a `DaemonSet` to run natively on GPU nodes for rapid inference access.
 * **Morpheus Pipelines:** Shared Morpheus deployments that attach to Kafka to ingest and process tenant data.
 
-### Edge Collectors (`deploy/collectors`)
+### Edge Collectors (`deployment/collectors`)
 * Used for provisioning external VMs or hardware at customer locations.
 * Contains `cloud-init` templates for automated OS bootstrapping and `docker-compose` setups for running localized Fluent-Bit and parsing configurations (`parser-3164.conf`).
 
-### Tenant Deployments (`deploy/tenants` & `deploy/base`)
+### Tenant Deployments (`deployment/tenants` & `deployment/base`)
 * The `tenants` directory acts as the strict source of truth for deployed tenant instances. 
 * Uses **Kustomize** to patch the `base/` resources.
-* **OAuth2 Proxy & Keycloak:** A template for the proxy is maintained in `base/oauth2-proxy/`. For each new customer, a dedicated Keycloak realm must be created. The finalized, customer-specific `oauth2_proxy.yaml` (which ties into their unique Keycloak realm) is generated from the template and placed directly in their tenant directory.
+* **Separation of Concerns:** Tenants are split into `app/` (web, UI, backend) and `gpu/` (AI inference pipelines) to target different NodePools.
+* **Automated Storage:** The `base/halo/pipelines/storage` overlay combined with Trident dynamically creates tenant PVCs (like `gtt-gtt3d0-storage`).
+* **Kafka Topics & Routing:** Internal Kafka routing is explicitly defined in the bases. Topics are automatically generated via `topics.yaml` Strimzi CRDs.
+* **OAuth2 Proxy & Keycloak:** A template for the proxy is maintained in `base/vendor/oauth2-proxy/`.
+* **Secrets:** Handled securely via Vault integration (no raw secrets in patches).
 * **Cloudflare DNS Integration:** For every new customer ingress (e.g., `corp.defensehalo.ai`), a corresponding DNS record must be dynamically provisioned in Cloudflare pointing to the cluster's ingress controller.
 * Specific pipeline configurations (like `syslog-pipeline.yaml`), `oauth2_proxy.yaml` configurations, and custom `ingress.yaml` definitions (e.g. `corp.defensehalo.ai` pointing to the OAuth proxy) are explicitly mapped per tenant in their respective regional directory.

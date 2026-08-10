@@ -15,6 +15,41 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.1.3
+  date: "2026-08-10"
+  author: "Martin Kecka"
+  changes:
+    - category: "🚀 Architecture & Infrastructure"
+      items:
+        - "Implemented dynamic Rancher cluster token retrieval directly from Vault, eliminating hardcoded local credentials."
+        - "Created `core/clients/vault_client.py` (`VaultClient`) to properly abstract `hvac` token retrieval logic away from the core managers."
+        - "Refactored `kube_manager.py` to utilize `VaultClient` for dynamically refreshing cluster credentials without overwriting local configurations (e.g., `app_cluster_name` and `halo_cluster_name`)."
+
+- version: '0.1.2'
+  date: '2026-08-07'
+  author: 'Martin Kecka'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Redesigned the GitOps inventory grouping schema to explicitly decouple `main` and `dev` environments into a nested hierarchy with their respective releases, bypassing standard features.'
+        - 'Updated CLI `git inventory` output to logically nest and group core environment releases directly under their respective base branch cards.'
+        - 'Added tracking for `last_updated_at` on Git branches within the inventory synchronization flow, pulling the `committed_date` directly from the GitLab API.'
+        - 'Updated CLI `git inventory` output to distinctively display `Container Created` vs `Branch Updated` timestamps to resolve timeline ambiguities.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Fixed a Git authorship issue by configuring the `git release` orchestrator to explicitly pass the human operator''s name and email to both local commits and the GitLab API, preventing `gia-ai` bot attribution.'
+        - 'Enhanced the Git Inventory engine to actively cross-reference Git branch histories with the `GitReleaseAuditLog` database, dynamically restoring the real human `Actor` identity on branches previously merged by the bot.'
+
+- version: '0.1.1'
+  date: '2026-08-03'
+  author: 'Martin Kecka'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Migrated tenant configurations from legacy boolean flags (`is_internal`) to a strict GitOps-driven `TenantCustomization` JSON payload model to natively support flexible environments and governance policies.'
+        - 'Deprecated `TenantFeatureFlag` and `environment` in favor of a centralized 1:1 `TenantCustomization` relation within `HaloTenant`.'
+        - 'Implemented the `UpdateTenantCustomization` gRPC RPC and CLI command, replacing the legacy `SetTenantInternal` workflow.'
+
 - version: '0.1.0'
   date: '2026-08-03'
   author: 'Martin Kecka'

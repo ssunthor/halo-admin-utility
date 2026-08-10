@@ -19,18 +19,56 @@ class KubeManager:
     @staticmethod
     def get_all_cluster_names(rancher_config):
         api_url = rancher_config['url']
-        token = rancher_config['token']
+        token = rancher_config.get('token')
         resp = requests.get(f"{api_url}/v3/clusters", headers={'Authorization': f"Bearer {token}"}, verify=False, timeout=10)
         if resp.status_code == 200:
             clusters = resp.json().get('data', [])
             return [c.get('name') for c in clusters if c.get('name')]
         return []
 
-    def __init__(self, rancher_config, cluster_name):
+    def _refresh_token_from_vault(self):
+        if not self.vault_client or not self.config_ref:
+            logger.warning("No Vault client or config ref available to refresh Rancher token.")
+            return False
+            
+        try:
+            path = self.config_ref.get('vault_paths', {}).get('rancher_system')
+            if not path:
+                return False
+                
+            logger.info("Fetching fresh Rancher tokens from Vault...")
+            clusters = self.vault_client.get_rancher_tokens(path=path)
+            if clusters:
+                for region, data in clusters.items():
+                    if region in self.config_ref.get('rancher_clusters', {}):
+                        self.config_ref['rancher_clusters'][region].update(data)
+                
+                for region, cluster_data in clusters.items():
+                    if cluster_data.get('url') == self.api_url:
+                        new_token = cluster_data.get('token')
+                        if new_token:
+                            self.token = new_token
+                            if hasattr(self, 'api_client'):
+                                self.api_client.configuration.api_key['authorization'] = f"Bearer {new_token}"
+                            logger.info(f"Successfully refreshed token for region {region}")
+                            return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to refresh Rancher token from Vault: {e}")
+            return False
+
+    def __init__(self, rancher_config, cluster_name, vault_client=None, config_ref=None):
         self.api_url = rancher_config['url']
-        self.token = rancher_config['token']
+        self.token = rancher_config.get('token', '')
+        self.vault_client = vault_client
+        self.config_ref = config_ref
         
         resp = requests.get(f"{self.api_url}/v3/clusters", headers={'Authorization': f"Bearer {self.token}"}, verify=False, timeout=10)
+        
+        # Retry on 401/403
+        if resp.status_code in (401, 403) and self._refresh_token_from_vault():
+            resp = requests.get(f"{self.api_url}/v3/clusters", headers={'Authorization': f"Bearer {self.token}"}, verify=False, timeout=10)
+            
         if resp.status_code == 200:
             clusters = resp.json().get('data', [])
             cluster_id = None
@@ -51,10 +89,27 @@ class KubeManager:
         configuration.verify_ssl = False
         
         self.api_client = client.ApiClient(configuration)
+        
+        # Monkey patch call_api to automatically refresh token on 401/403
+        original_call_api = self.api_client.call_api
+        
+        def call_api_with_retry(*args, **kwargs):
+            try:
+                return original_call_api(*args, **kwargs)
+            except ApiException as e:
+                if e.status in (401, 403):
+                    logger.info("Caught 401/403. Attempting to refresh token from Vault...")
+                    if self._refresh_token_from_vault():
+                        return original_call_api(*args, **kwargs)
+                raise
+                
+        self.api_client.call_api = call_api_with_retry
+        
         self.core_v1 = client.CoreV1Api(self.api_client)
         self.apps_v1 = client.AppsV1Api(self.api_client)
         
-        self.prom_manager = PrometheusManager(self.cluster_url, self.token)
+        # Pass KubeManager reference to PrometheusManager to allow token refresh
+        self.prom_manager = PrometheusManager(self.cluster_url, self.token, km_ref=self)
 
     def _get_target_pod(self, namespace, pod_prefix):
         pods = self.core_v1.list_namespaced_pod(namespace)

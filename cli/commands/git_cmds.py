@@ -132,7 +132,18 @@ def git_inventory(ctx, as_grpc, project):
                 active_str = click.style(f" [🚀 Active Deployments: {active_deployments}{ns_str}]", fg='green', bold=True) if active_deployments > 0 else ""
                 tag_name = click.style(c.get('tag', c.get('container_tag', '')), fg='cyan', bold=True)
                 author = c.get('author', c.get('branch_author', 'Unknown'))
-                created = c.get('created_at', c.get('container_created', 'unknown'))
+                
+                # Check for container creation date and branch last updated date
+                created = c.get('created_at', c.get('container_created'))
+                branch_updated = c.get('branch_last_updated')
+                
+                date_str = ""
+                if created and created != "unknown":
+                    date_str += f" | Container Created: {created}"
+                if branch_updated and branch_updated != "unknown":
+                    date_str += f" | Branch Updated: {branch_updated}"
+                if not date_str:
+                    date_str = " | Created: unknown"
                 
                 extra = ""
                 if 'branch' in c:
@@ -142,15 +153,32 @@ def git_inventory(ctx, as_grpc, project):
                     
                 native_rel_str = click.style(" [📜 Release Notes]", fg='magenta', bold=True) if c.get('has_native_release') else ""
                 
-                click.echo(f"      - {label}{tag_name}{extra}{active_str}{native_rel_str} | Created: {created} | Author: {author}")
+                click.echo(f"      - {label}{tag_name}{extra}{active_str}{native_rel_str}{date_str} | Author: {author}")
                 
-            if inv.get('releases'):
-                click.secho(f"   🚀 Releases:", fg='green')
-                for c in inv['releases']: print_container(c, "📦 ")
+            main_branch = next((c for c in inv.get('core_environments', []) if c.get('branch') in ['main', 'master']), None)
+            dev_branch = next((c for c in inv.get('core_environments', []) if c.get('branch') == 'dev'), None)
             
-            if inv.get('pre_releases'):
-                click.secho(f"   🚧 Pre-releases (-dev):", fg='yellow')
-                for c in inv['pre_releases']: print_container(c, "📦 ")
+            if main_branch or inv.get('releases'):
+                click.secho(f"   🟢 Main Environment:", fg='green', bold=True)
+                if main_branch:
+                    if 'container_tag' in main_branch or 'tag' in main_branch:
+                        print_container(main_branch, "📦 ")
+                    else:
+                        updated_str = f" | Branch Updated: {main_branch.get('last_updated_at')}" if main_branch.get('last_updated_at') else ""
+                        click.echo(f"      - 🌿 {click.style(main_branch['branch'], fg='white', bold=True)}{updated_str} | Author: {main_branch.get('author', 'Unknown')}")
+                if inv.get('releases'):
+                    for c in inv['releases']: print_container(c, "🚀 ")
+                    
+            if dev_branch or inv.get('pre_releases'):
+                click.secho(f"   🟡 Dev Environment:", fg='yellow', bold=True)
+                if dev_branch:
+                    if 'container_tag' in dev_branch or 'tag' in dev_branch:
+                        print_container(dev_branch, "📦 ")
+                    else:
+                        updated_str = f" | Branch Updated: {dev_branch.get('last_updated_at')}" if dev_branch.get('last_updated_at') else ""
+                        click.echo(f"      - 🌿 {click.style(dev_branch['branch'], fg='white', bold=True)}{updated_str} | Author: {dev_branch.get('author', 'Unknown')}")
+                if inv.get('pre_releases'):
+                    for c in inv['pre_releases']: print_container(c, "🚧 ")
                 
             if inv.get('features'):
                 click.secho(f"   ✨ Active Features:", fg='blue')
@@ -163,7 +191,8 @@ def git_inventory(ctx, as_grpc, project):
             if inv.get('active_branches_without_containers'):
                 click.secho(f"   🌱 Active Branches (No Container):", fg='cyan', dim=True)
                 for b in inv['active_branches_without_containers']:
-                    click.echo(f"      - 🌿 {click.style(b['branch'], fg='white', bold=True)} | Author: {b.get('author', 'Unknown')}")
+                    updated_str = f" | Branch Updated: {b.get('last_updated_at')}" if b.get('last_updated_at') else ""
+                    click.echo(f"      - 🌿 {click.style(b['branch'], fg='white', bold=True)}{updated_str} | Author: {b.get('author', 'Unknown')}")
             click.echo()
             
     except json.JSONDecodeError:
@@ -172,18 +201,20 @@ def git_inventory(ctx, as_grpc, project):
 @git_cli.command(name='sync')
 @click.argument('target', default='halo')
 @click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
+@click.option("--branch", "-b", help="Branch to sync and checkout (e.g. dev or main). Falls back to repo default if missing.")
 @handle_grpc_errors
 @click.pass_context
-def git_sync(ctx, target, as_grpc):
+def git_sync(ctx, target, as_grpc, branch):
     """Clones or pulls the latest changes for HALO or templates locally."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
-    req = hau_pb2.GitSyncRequest(target=target)
+    req = hau_pb2.GitSyncRequest(target=target, branch=branch or "")
     
     if target == 'templates':
         click.echo("Syncing ai/gitlab-ci-templates to local cache... This may take a moment.")
     else:
-        click.echo("Syncing all ai/halo repositories to local cache (defaulting to 'dev' branch)... This may take a moment.")
+        branch_str = f"'{branch}'" if branch else "'dev'"
+        click.echo(f"Syncing all ai/halo repositories to local cache (defaulting to {branch_str} branch)... This may take a moment.")
         
     resp = stub.GitSync(req)
     
@@ -218,9 +249,11 @@ def git_list(ctx, as_grpc):
             for repo in data:
                 click.echo(f"Repository: {repo['repository']} (Locally active branch: {repo['active_branch']})")
                 default_branch = repo.get('default_branch', 'main')
+                protected_branches = repo.get('protected_branches', [])
                 for b in repo.get('branches', []):
                     is_default = " [default]" if b == default_branch else ""
-                    click.echo(f"  - {b}{is_default}")
+                    is_protected = " [🔒 protected]" if b in protected_branches else ""
+                    click.echo(f"  - {b}{is_default}{is_protected}")
                 click.echo()
         except json.JSONDecodeError:
             click.echo(f"\n{resp.result_json}\n")

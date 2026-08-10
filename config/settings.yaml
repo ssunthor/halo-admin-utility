@@ -1,6 +1,6 @@
 module_info:
   name: "HALO Admin Utility"
-  version: "0.1.0"
+  version: "0.1.3"
   acronym: "HAU"
   category: "Utility"
   description: "Primary operational control plane to provision, govern, and monitor HALO customer tenants."
@@ -51,19 +51,19 @@ rancher_clusters:
     cluster_name: "prg-aif-clu01"
     halo_cluster_name: "prg-hal-clu01"
     gpu_cluster_name: "prg-aif-nvclu01"
-    token: "token-4d99z:spvbdqh769qj5nk254p224lzc6j8qzxbwhmq8kx76ch8v7cbpmf49q"
   slo:
     url: "https://slo-aif-rancher.slo.gt-t.net"
     cluster_name: "slo-aif-clu01"
     halo_cluster_name: "slo-hal-clu01"
     gpu_cluster_name: "slo-aif-nvclu01"
-    token: "token-7sfj8:hsqn4bwkpz2pmdz2qxwcxczd6mrs5fpxrnspvk8bw7xcdndtvrrb49"
   nyc:
     url: "https://nyc-aif-rancher.nyh.gt-t.net"
     cluster_name: "nyc-aif-clu01"
     halo_cluster_name: "nyc-hal-clu01"
     gpu_cluster_name: "nyc-aif-nvclu01"
-    token: "token-xrhz2:lf4vknpmxtc9llcdqfw7ttvlcjctnfwbdgrx26w54qf9b5vb7qz7wl"
+
+vault_paths:
+  rancher_system: "rancher/system/gia_ai"
 
 auth:
   auth_url: "https://keycloak-aif.gt-t.net/realms/aif-llm/protocol/openid-connect/token"

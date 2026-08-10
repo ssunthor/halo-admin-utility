@@ -9,7 +9,8 @@ class SQLReader:
         self.session = session
 
     def get_all_inventory(self, tenant_slug: str = None):
-        query = self.session.query(HaloTenant)
+        from sqlalchemy.orm import joinedload
+        query = self.session.query(HaloTenant).options(joinedload(HaloTenant.customization))
         if tenant_slug:
             query = query.filter_by(slug_name=tenant_slug)
         tenants = query.all()
@@ -20,8 +21,13 @@ class SQLReader:
             
             tenant_dict = {
                 "slug_name": t.slug_name,
-                "environment": t.environment,
-                "is_internal": t.is_internal,
+                "tenant_category": t.customization.tenant_category if t.customization else "CUSTOMER",
+                "tenant_tier": t.customization.tenant_tier if t.customization else "UNKNOWN",
+                "update_policy": t.customization.update_policy if t.customization else "MANUAL_ONLY",
+                "owner": t.customization.owner if t.customization else "UNASSIGNED",
+                "purpose": t.customization.purpose if t.customization else None,
+                "maintenance_window": t.customization.maintenance_window if t.customization else None,
+                "configuration_payload": t.customization.configuration_payload if t.customization else {},
                 "url": t.url
             }
             
@@ -99,12 +105,13 @@ class SQLReader:
         for p in projects:
             # FIX: Use project_path to map correctly from audit log full paths!
             p_audit = audit_mapping.get(p.project_path, {})
-            branches = {b.name: b.author for b in p.branches}
+            branches = {b.name: {"author": b.author, "last_updated_at": b.last_updated_at.isoformat() if getattr(b, "last_updated_at", None) else None} for b in p.branches}
             
             releases = []
             pre_releases = []
             features = []
             standalone_features = []
+            core_environments = []
             
             matched_containers = set()
             for c in p.containers:
@@ -135,18 +142,23 @@ class SQLReader:
                     pre_releases.append(c_info)
                     matched_containers.add(tag)
                 else:
-                    for b_name, b_author in branches.items():
+                    for b_name, b_info in branches.items():
                         sanitized_b = b_name.replace('/', '-')
                         if tag == sanitized_b:
-                            features.append({
+                            feat_info = {
                                 "branch": b_name,
-                                "branch_author": b_author,
+                                "branch_author": b_info.get("author", "Unknown"),
+                                "branch_last_updated": b_info.get("last_updated_at"),
                                 "container_tag": tag,
                                 "container_created": c_info["created_at"],
                                 "active_deployments": deploy_count,
                                 "active_namespaces": deploy_namespaces,
                                 "has_native_release": c.has_native_release
-                            })
+                            }
+                            if b_name in ["main", "master", "dev"]:
+                                core_environments.append(feat_info)
+                            else:
+                                features.append(feat_info)
                             matched_containers.add(tag)
                             break
                             
@@ -164,12 +176,16 @@ class SQLReader:
                         "has_native_release": c.has_native_release
                     })
                     
-            matched_branches = [f["branch"] for f in features]
-            active_branches_without_containers = [
-                {"branch": b_name, "author": b_author} 
-                for b_name, b_author in branches.items() 
-                if b_name not in matched_branches
-            ]
+            matched_branches = [f["branch"] for f in features] + [f["branch"] for f in core_environments if "branch" in f]
+            active_branches_without_containers = []
+            
+            for b_name, b_info in branches.items():
+                if b_name not in matched_branches:
+                    branch_info = {"branch": b_name, "author": b_info.get("author", "Unknown"), "last_updated_at": b_info.get("last_updated_at")}
+                    if b_name in ["main", "master", "dev"]:
+                        core_environments.append(branch_info)
+                    else:
+                        active_branches_without_containers.append(branch_info)
             
             proj_data = {
                 "name": p.project_name,
@@ -177,6 +193,7 @@ class SQLReader:
                 "type": p.project_type.name,
                 "is_deprecated": p.is_deprecated,
                 "inventory": {
+                    "core_environments": sorted(core_environments, key=lambda x: x.get('branch', '')),
                     "releases": sorted(releases, key=lambda x: x['tag'], reverse=True),
                     "pre_releases": sorted(pre_releases, key=lambda x: x['tag'], reverse=True),
                     "features": sorted(features, key=lambda x: x['branch']),
@@ -236,7 +253,7 @@ class SQLReader:
         return result
 
     def get_successful_git_releases(self):
-        return self.session.query(GitReleaseAuditLog).filter(GitReleaseAuditLog.status == 'SUCCESS').all()
+        return self.session.query(GitReleaseAuditLog).filter(GitReleaseAuditLog.status == 'SUCCESS').order_by(GitReleaseAuditLog.timestamp.desc()).all()
 
     def get_active_git_release_audit_log(self, project_name: str):
         return self.session.query(GitReleaseAuditLog).filter_by(

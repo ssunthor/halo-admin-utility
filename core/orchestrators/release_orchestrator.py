@@ -393,7 +393,7 @@ class ReleaseOrchestrator:
                         yield f"[DRY-RUN] Would execute: git push -o ci.skip origin {source_branch}"
                     else:
                         subprocess.run(['git', 'add', 'docs/CHANGELOG.yaml'], cwd=repo_local_path)
-                        commit_res = subprocess.run(['git', 'commit', '-m', f"chore(release): auto-generate changelog for v{version}"], cwd=repo_local_path, capture_output=True, text=True)
+                        commit_res = subprocess.run(['git', 'commit', f'--author={author_name} <{author_email}>', '-m', f"chore(release): auto-generate changelog for v{version}"], cwd=repo_local_path, capture_output=True, text=True)
                         if commit_res.returncode != 0 and "nothing to commit" not in commit_res.stdout:
                             yield {"success": False, "message": f"Failed to commit changelog: {commit_res.stderr}"}
                             return
@@ -424,9 +424,11 @@ class ReleaseOrchestrator:
                         self.gitlab_manager.commit_file_api(
                             project_path="ai/halo/deployment",
                             file_path=f"docs/{proj_basename}/CHANGELOG.yaml",
-                            content=open(cl_path, 'r').read(),
                             branch="main",
-                            commit_msg=f"chore(docs): sync changelog for {proj_basename} v{version}"
+                            content=open(cl_path, 'r').read(),
+                            commit_msg=f"chore(docs): sync changelog for {proj_basename} v{version}",
+                            author_name=author_name,
+                            author_email=author_email
                         )
                         yield f"Successfully synced changelog to deployment/docs/{proj_basename}/CHANGELOG.yaml."
                     except Exception as e:

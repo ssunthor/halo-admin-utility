@@ -89,7 +89,7 @@ class GitlabManager:
             output = (result.stdout + "\n" + result.stderr).strip()
             return f"Successfully pulled latest changes for {project_path} in {local_path}.\n{output}"
 
-    def sync_group_cache(self, default_branch='dev'):
+    def sync_group_cache(self, branch_override=None):
         token = self.config.get('bot_token')
         project_path = self.config.get('project_path')
         local_path = self.config.get('local_clone_path')
@@ -113,10 +113,11 @@ class GitlabManager:
                 
             repo_local_path = os.path.join(local_path, rel_path)
             
+            target_pref = branch_override if branch_override else 'dev'
             if not os.path.exists(os.path.join(repo_local_path, '.git')):
-                ls_remote = subprocess.run(['git', 'ls-remote', '--heads', repo_url, default_branch], capture_output=True, text=True)
+                ls_remote = subprocess.run(['git', 'ls-remote', '--heads', repo_url, target_pref], capture_output=True, text=True)
                 if ls_remote.stdout.strip():
-                    target_branch = default_branch
+                    target_branch = target_pref
                 else:
                     target_branch = p.default_branch or 'main'
                     
@@ -129,17 +130,33 @@ class GitlabManager:
                     return f"✅ Cloned {p.path_with_namespace} (branch: {target_branch})"
             else:
                 subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=repo_local_path)
+                subprocess.run(['git', 'fetch', 'origin'], cwd=repo_local_path, capture_output=True)
                 
-                curr_res = subprocess.run(['git', 'branch', '--show-current'], cwd=repo_local_path, capture_output=True, text=True)
-                active_branch = curr_res.stdout.strip()
-                if not active_branch:
-                    active_branch = p.default_branch or 'main'
+                # Pre-clean working directory to avoid checkout errors
+                subprocess.run(['git', 'reset', '--hard'], cwd=repo_local_path, capture_output=True)
+                subprocess.run(['git', 'clean', '-fd'], cwd=repo_local_path, capture_output=True)
+                
+                if branch_override:
+                    res = subprocess.run(['git', 'rev-parse', '--verify', f'origin/{branch_override}'], cwd=repo_local_path, capture_output=True)
+                    if res.returncode == 0:
+                        active_branch = branch_override
+                    else:
+                        active_branch = p.default_branch or 'main'
                     subprocess.run(['git', 'checkout', active_branch], cwd=repo_local_path, capture_output=True)
+                else:
+                    curr_res = subprocess.run(['git', 'branch', '--show-current'], cwd=repo_local_path, capture_output=True, text=True)
+                    active_branch = curr_res.stdout.strip()
+                    if not active_branch:
+                        active_branch = p.default_branch or 'main'
+                        subprocess.run(['git', 'checkout', active_branch], cwd=repo_local_path, capture_output=True)
                 
-                logger.info(f"Pulling {p.path_with_namespace} in {repo_local_path} (branch: {active_branch})...")
-                result = subprocess.run(['git', 'pull', 'origin', active_branch], cwd=repo_local_path, capture_output=True, text=True)
+                logger.info(f"Syncing {p.path_with_namespace} in {repo_local_path} (branch: {active_branch})...")
+                # Hard reset to remote and clean untracked files to ensure pristine cache state
+                result = subprocess.run(['git', 'reset', '--hard', f'origin/{active_branch}'], cwd=repo_local_path, capture_output=True, text=True)
+                subprocess.run(['git', 'clean', '-fd'], cwd=repo_local_path, capture_output=True)
+                
                 if result.returncode != 0:
-                    return f"❌ Failed to pull {p.path_with_namespace} (branch: {active_branch}): {result.stderr.strip()}"
+                    return f"❌ Failed to sync {p.path_with_namespace} (branch: {active_branch}): {result.stderr.strip()}"
                 else:
                     return f"✅ Synced {p.path_with_namespace} (branch: {active_branch})"
 
@@ -191,11 +208,21 @@ class GitlabManager:
                 
                 default_branch = projects[full_project_path].default_branch if full_project_path in projects else 'main'
                 
+                protected_branches = []
+                if full_project_path in projects:
+                    try:
+                        p = projects[full_project_path]
+                        real_p = gl.projects.get(p.id, lazy=True)
+                        protected_branches = [pb.name for pb in real_p.protectedbranches.list()]
+                    except Exception as e:
+                        pass
+                
                 repo_data = {
                     "repository": full_project_path,
                     "active_branch": active_branch,
                     "default_branch": default_branch,
-                    "branches": branches
+                    "branches": branches,
+                    "protected_branches": protected_branches
                 }
                 output.append(repo_data)
                 
@@ -265,7 +292,7 @@ class GitlabManager:
                     
         return "\n".join(logs)
 
-    def commit_file_api(self, project_path, file_path, branch, content, commit_msg):
+    def commit_file_api(self, project_path, file_path, branch, content, commit_msg, author_name=None, author_email=None):
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         project = gl.projects.get(project_path)
         
@@ -280,6 +307,10 @@ class GitlabManager:
                 }
             ]
         }
+        if author_name:
+            data['author_name'] = author_name
+        if author_email:
+            data['author_email'] = author_email
         
         try:
             project.commits.create(data)

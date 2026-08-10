@@ -5,32 +5,12 @@ from kubernetes.client import NetworkingV1Api
 logger = logging.getLogger(__name__)
 
 class InventoryOrchestrator:
-    def __init__(self, config, sql_writer):
+    def __init__(self, config, sql_writer, vault_client=None):
         self.config = config
         self.sql_writer = sql_writer
+        self.vault_client = vault_client
         self.rancher_clusters = config.get('rancher_clusters', {})
-
-    def parse_tenant_metadata(self, slug_name):
-        # Best effort parsing of halo-<customer>-<environment> or known mess
-        is_internal = False
-        environment = 'prod' # Default
-        
-        # Determine internal flag based on keywords
-        internal_keywords = ['corp', 'nfv', 'soc', 'dev', 'core', 'sentinel']
-        for kw in internal_keywords:
-            if kw in slug_name.split('-'):
-                is_internal = True
-                break
-                
-        # Determine environment based on keywords
-        if 'dev' in slug_name:
-            environment = 'dev'
-        elif 'demo' in slug_name:
-            environment = 'demo'
-        elif 'stage' in slug_name:
-            environment = 'stage'
-            
-        return environment, is_internal
+        self.valid_app_namespaces = set()
 
     def sync_inventory(self):
         logger.info("Starting inventory sync across all configured clusters...")
@@ -46,12 +26,14 @@ class InventoryOrchestrator:
             if gpu_cluster:
                 self._sync_gpu_cluster(region, cluster_conf, gpu_cluster)
 
+        self.sql_writer.clean_orphaned_tenants()
+        self.sql_writer.session.commit()
         logger.info("Inventory sync complete.")
 
     def _sync_app_cluster(self, region, cluster_conf, app_cluster):
         logger.info(f"Connecting to App cluster: {app_cluster}")
         try:
-            km = KubeManager(cluster_conf, app_cluster)
+            km = KubeManager(cluster_conf, app_cluster, vault_client=self.vault_client, config_ref=self.config)
             namespaces = km.core_v1.list_namespace()
         except Exception as e:
             logger.error(f"Failed to connect or list namespaces on {app_cluster}: {e}")
@@ -65,12 +47,10 @@ class InventoryOrchestrator:
                 self._process_app_namespace(km, app_cluster, ns_name)
 
     def _process_app_namespace(self, km, app_cluster, ns_name):
-        env, is_internal = self.parse_tenant_metadata(ns_name)
+        self.valid_app_namespaces.add(ns_name)
         tenant = self.sql_writer.upsert_halo_tenant(
             slug_name=ns_name,
-            target_cluster=app_cluster,
-            environment=env,
-            is_internal=is_internal
+            target_cluster=app_cluster
         )
             
         # Get deployments
@@ -187,12 +167,20 @@ class InventoryOrchestrator:
     def _sync_gpu_cluster(self, region, cluster_conf, gpu_cluster):
         logger.info(f"Connecting to GPU cluster: {gpu_cluster}")
         try:
-            km = KubeManager(cluster_conf, gpu_cluster)
+            km = KubeManager(cluster_conf, gpu_cluster, vault_client=self.vault_client, config_ref=self.config)
             ns_name = "halo"
             deps = km.apps_v1.list_namespaced_deployment(ns_name)
             svcs = km.core_v1.list_namespaced_service(ns_name)
             endpoints = km.core_v1.list_namespaced_endpoints(ns_name)
             pods = km.core_v1.list_namespaced_pod(ns_name)
+            pvcs = km.core_v1.list_namespaced_persistent_volume_claim(ns_name)
+            cms = km.core_v1.list_namespaced_config_map(ns_name)
+            
+            try:
+                net_v1 = NetworkingV1Api(km.api_client)
+                ings = net_v1.list_namespaced_ingress(ns_name)
+            except:
+                ings = None
         except Exception as e:
             logger.error(f"Failed to connect or list resources in GPU cluster {gpu_cluster}: {e}")
             return
@@ -204,21 +192,16 @@ class InventoryOrchestrator:
                 return tenant_map[dep_name]
                 
             tenant_slug = self._infer_tenant_from_pipeline(dep_name)
-            if tenant_slug:
-                env, is_internal = self.parse_tenant_metadata(tenant_slug)
+            if tenant_slug and tenant_slug in self.valid_app_namespaces:
                 tenant = self.sql_writer.upsert_halo_tenant(
                     slug_name=tenant_slug,
-                    target_cluster=cluster_conf.get('halo_cluster_name', 'UNKNOWN'),
-                    environment=env,
-                    is_internal=is_internal
+                    target_cluster=cluster_conf.get('halo_cluster_name', 'UNKNOWN')
                 )
             else:
                 unmapped_slug = f"unmapped-gpu-{region}"
                 tenant = self.sql_writer.upsert_halo_tenant(
                     slug_name=unmapped_slug,
-                    target_cluster=gpu_cluster,
-                    environment='unknown',
-                    is_internal=True
+                    target_cluster=gpu_cluster
                 )
             tenant_map[dep_name] = tenant
             return tenant
@@ -282,15 +265,49 @@ class InventoryOrchestrator:
             }
             self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Active_Pods', pod_name, meta, gpu_cluster)
 
+        for p in pvcs.items:
+            pvc_name = p.metadata.name
+            tenant = get_tenant(pvc_name)
+            meta = {
+                "status": p.status.phase,
+                "size": p.spec.resources.requests.get('storage', 'Unknown') if p.spec.resources.requests else "Unknown"
+            }
+            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_PVCs', pvc_name, meta, gpu_cluster)
+            
+        for c in cms.items:
+            cm_name = c.metadata.name
+            tenant = get_tenant(cm_name)
+            matched_keys = list(c.data.keys()) if c.data else []
+            meta = {
+                "matched_keys": ", ".join(matched_keys)
+            }
+            self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_ConfigMaps', cm_name, meta, gpu_cluster)
+            
+        if ings:
+            for i in ings.items:
+                ing_name = i.metadata.name
+                tenant = get_tenant(ing_name)
+                hosts = []
+                if i.spec.rules:
+                    for r in i.spec.rules:
+                        hosts.append(r.host or '*')
+                meta = {
+                    "hosts": ", ".join(hosts)
+                }
+                self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Ingresses', ing_name, meta, gpu_cluster)
+
 
     def _infer_tenant_from_pipeline(self, dep_name):
         # Patterns like gtt-corp-syslog-pipeline -> halo-corp
-        prefixes_to_strip = ['gtt-']
+        prefixes_to_strip = ['gtt-', 'sera-ai-nim-', 'keeper-0-keeper-', 'cluster-data-chi-']
         suffixes_to_strip = [
             '-syslog-pipeline', '-syslog-pipeline-v2', 
             '-netflow-pipeline', '-netflow-pipeline-v2', 
             '-netflow-dfp', '-firewall-pipeline', '-firewall-pipeline-v2',
-            '-fortinet-pipeline', '-fortinet-pipeline-v2'
+            '-fortinet-pipeline', '-fortinet-pipeline-v2',
+            '-storage', '-pvc', '-models', '-inference-models',
+            '-dfp-models', '-test-storage', '-nv-rerankqa-1b-v2-pvc',
+            '-nemotron-3-nano-pvc', '-cluster-0-0', '-cluster-cluster-0-0-0'
         ]
         
         base_name = dep_name
@@ -305,11 +322,20 @@ class InventoryOrchestrator:
                 
         # If it was just triton or test pod, we can't map it to a specific tenant
         if base_name == dep_name or 'test-' in base_name:
-            return None 
+            # Maybe it still starts with halo-
+            pass
             
         # Clean prefix
         for p in prefixes_to_strip:
             if base_name.startswith(p):
                 base_name = base_name[len(p):]
                 
+        # If no suffixes were stripped and it wasn't a known prefix, and doesn't start with halo
+        if base_name == dep_name and not base_name.startswith('halo-'):
+            return None
+                
+        # If it already starts with halo-, don't prepend it again
+        if base_name.startswith('halo-'):
+            return base_name
+            
         return f"halo-{base_name}"

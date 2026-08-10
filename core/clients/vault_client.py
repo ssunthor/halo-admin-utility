@@ -33,8 +33,8 @@ class VaultClient:
             logger.error(f"Vault authentication failed: {e}")
             raise
 
-    def get_syseng_credentials(self, path="syseng/syseng_ansible", mount_point="secret"):
-        """Fetches the private SSH key and sudo password directly into memory."""
+    def get_rancher_tokens(self, path="rancher/system/gia_ai", mount_point="secret"):
+        """Fetches the Rancher tokens for clusters."""
         try:
             response = self.client.secrets.kv.v2.read_secret_version(
                 mount_point=mount_point, 
@@ -42,14 +42,14 @@ class VaultClient:
             )
             data = response['data']['data']
             
-            if 'openssh_private_key' not in data:
-                raise KeyError(f"Key 'openssh_private_key' not found at Vault path '{path}'")
+            if 'clusters' not in data:
+                raise KeyError(f"Key 'clusters' not found at Vault path '{path}'")
                 
-            logger.debug(f"Successfully retrieved SSH key and password from Vault.")
-            return data.get('openssh_private_key'), data.get('password')
+            logger.debug(f"Successfully retrieved Rancher tokens from Vault.")
+            return data.get('clusters')
         except hvac.exceptions.InvalidPath:
             logger.error(f"Vault path '{mount_point}/{path}' does not exist.")
             raise
         except Exception as e:
-            logger.error(f"Error retrieving SSH key from Vault: {e}")
+            logger.error(f"Error retrieving Rancher tokens from Vault: {e}")
             raise

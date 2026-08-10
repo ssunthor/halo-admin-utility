@@ -15,6 +15,16 @@ class SQLWriter:
     def clear_inventory(self):
         self.session.query(TenantResourceInventory).delete()
 
+    def clean_orphaned_tenants(self):
+        self.session.flush()
+        from core.database.models import HaloTenant, TenantResourceInventory
+        subq = self.session.query(TenantResourceInventory.tenant_id).subquery()
+        orphans = self.session.query(HaloTenant).filter(~HaloTenant.id.in_(subq.select())).all()
+        for orphan in orphans:
+            logger.info(f"Deleting orphaned tenant: {orphan.slug_name}")
+            self.session.delete(orphan)
+        self.session.flush()
+
     def add_deployment_log(self, tenant_id: str, app_name: str, status: str, action: str, target_version: str = None, message: str = None):
         log = DeploymentAuditLog(
             tenant_id=tenant_id,
@@ -55,10 +65,21 @@ class SQLWriter:
             for b in p.get("branches", []):
                 b_name = b if isinstance(b, str) else b.get("name")
                 b_author = "Unknown" if isinstance(b, str) else b.get("author")
+                
+                b_last_updated = None
+                if not isinstance(b, str) and b.get("last_updated_at"):
+                    try:
+                        # Attempt to parse timestamp (removing Z if present to simplify)
+                        dt_str = b.get("last_updated_at").replace("Z", "+00:00")
+                        b_last_updated = datetime.datetime.fromisoformat(dt_str)
+                    except:
+                        pass
+
                 self.session.add(GitBranch(
                     project_id=project.id,
                     name=b_name,
-                    author=b_author
+                    author=b_author,
+                    last_updated_at=b_last_updated
                 ))
                 
             self.session.query(GitContainer).filter_by(project_id=project.id).delete()
@@ -84,7 +105,7 @@ class SQLWriter:
                     ))
         self.session.commit()
 
-    def upsert_halo_tenant(self, slug_name: str, target_cluster: str, environment: str, is_internal: bool):
+    def upsert_halo_tenant(self, slug_name: str, target_cluster: str):
         tenant = self.session.query(HaloTenant).filter_by(
             slug_name=slug_name, 
             target_cluster=target_cluster
@@ -93,17 +114,19 @@ class SQLWriter:
         if not tenant:
             tenant = HaloTenant(
                 slug_name=slug_name,
-                target_cluster=target_cluster,
-                environment=environment,
-                is_internal=is_internal
+                target_cluster=target_cluster
             )
             self.session.add(tenant)
             self.session.flush()
-            return tenant
             
-        tenant.environment = environment
-        if not tenant.is_internal_overridden:
-            tenant.is_internal = is_internal
+        from core.database.models import TenantCustomization
+        if not tenant.customization:
+            tenant.customization = TenantCustomization(
+                tenant_id=tenant.id,
+                tenant_category="UNKNOWN"
+            )
+            self.session.flush()
+            
         return tenant
 
     def upsert_tenant_resource(self, tenant_id: str, resource_type: str, resource_name: str, metadata_dict: dict, cluster_name: str = None):
@@ -128,14 +151,27 @@ class SQLWriter:
                 resource.cluster_name = cluster_name
         return resource
 
-    def set_tenant_internal_flag(self, slug_name: str, is_internal: bool):
+    def update_tenant_customization(self, slug_name: str, **kwargs):
         tenant = self.session.query(HaloTenant).filter_by(slug_name=slug_name).first()
         if not tenant:
             return False, f"Tenant '{slug_name}' not found."
-        tenant.is_internal = is_internal
-        tenant.is_internal_overridden = True
+            
+        from core.database.models import TenantCustomization
+        if not tenant.customization:
+            tenant.customization = TenantCustomization(tenant_id=tenant.id)
+            
+        for k, v in kwargs.items():
+            if hasattr(tenant.customization, k) and v != "":
+                if k == "configuration_payload" and isinstance(v, str):
+                    import json
+                    try:
+                        v = json.loads(v)
+                    except:
+                        pass
+                setattr(tenant.customization, k, v)
+                
         self.session.flush()
-        return True, f"Successfully set {slug_name} is_internal={is_internal}"
+        return True, f"Successfully updated customization for {slug_name}"
 
     def create_git_release_audit_log(self, project_name: str, action: str, actor: str, status: str, source_branch: str = None, target_branch: str = None, merge_request_id: str = None):
         log = GitReleaseAuditLog(

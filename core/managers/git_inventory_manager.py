@@ -24,7 +24,7 @@ class GitInventoryManager:
             raise RuntimeError("GitLab config with URL and token is missing.")
             
         if audit_mapping is None:
-            audit_mapping = {}
+            audit_mapping = {'tags': {}, 'branches': {}}
             
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         url = f"{self.url.rstrip('/')}/api/graphql"
@@ -176,8 +176,8 @@ class GitInventoryManager:
         def fetch_project_git_info(proj_id_num):
             try:
                 project = gl.projects.get(proj_id_num)
-                active_branches = {b.name: b.commit['author_name'] for b in project.branches.list(get_all=True)}
-                active_git_tags = {gt.name: gt.commit['author_name'] for gt in project.tags.list(get_all=True)}
+                active_branches = {b.name: {"author_name": b.commit.get('author_name', 'Unknown'), "committed_date": b.commit.get('committed_date')} for b in project.branches.list(get_all=True)}
+                active_git_tags = {gt.name: {"author_name": gt.commit.get('author_name', 'Unknown'), "committed_date": gt.commit.get('committed_date')} for gt in project.tags.list(get_all=True)}
                 return proj_id_num, active_branches, active_git_tags
             except Exception:
                 return proj_id_num, {}, {}
@@ -226,7 +226,12 @@ class GitInventoryManager:
             native_release_tags = {r.get('tagName') for r in p.get('releases', {}).get('nodes', []) if r.get('tagName')}
             
             if active_branches:
-                branch_list = [{"name": b, "author": auth} for b, auth in active_branches.items()]
+                branch_list = []
+                for b, auth_data in active_branches.items():
+                    author = auth_data.get('author_name', 'Unknown')
+                    if p.get("fullPath") in audit_mapping.get('branches', {}) and b in audit_mapping['branches'][p.get("fullPath")]:
+                        author = audit_mapping['branches'][p.get("fullPath")][b]
+                    branch_list.append({"name": b, "author": author, "last_updated_at": auth_data.get('committed_date')})
             else:
                 branch_list = [
                     {"name": b, "author": "Unknown"}
@@ -259,27 +264,27 @@ class GitInventoryManager:
                     branch_exists = False
                     is_git_tag = False
                     
-                    for b_name, b_author in active_branches.items():
+                    for b_name, b_data in active_branches.items():
                         if t_name == b_name or t_name == b_name.replace('/', '-'):
                             source_branch = b_name
-                            author = b_author
+                            author = b_data.get('author_name', 'Unknown')
                             branch_exists = True
                             break
                             
                     if not branch_exists:
-                        for gt_name, gt_author in active_git_tags.items():
+                        for gt_name, gt_data in active_git_tags.items():
                             if t_name == gt_name or t_name == gt_name.replace('/', '-'):
                                 is_git_tag = True
-                                author = gt_author
+                                author = gt_data.get('author_name', 'Unknown')
                                 break
                                 
                     full_path = p.get("fullPath")
-                    if full_path in audit_mapping and t_name in audit_mapping[full_path]:
-                        audit_source = audit_mapping[full_path][t_name]
+                    if full_path in audit_mapping.get('tags', {}) and t_name in audit_mapping['tags'][full_path]:
+                        audit_source = audit_mapping['tags'][full_path][t_name]
                         source_branch = audit_source
                         if audit_source in active_branches:
                             branch_exists = True
-                            author = active_branches[audit_source]
+                            author = active_branches[audit_source].get('author_name', 'Unknown')
                             
                     enriched_tags.append({
                         "name": t_name, 

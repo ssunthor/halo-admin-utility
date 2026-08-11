@@ -86,6 +86,32 @@ def list_inventory(ctx, tenant, as_grpc):
         click.echo(f"❌ Failed: {resp.message}")
         sys.exit(1)
 
+@inventory_cli.command(name='delete-orphaned')
+@click.option('--grpc', 'as_grpc', is_flag=True, help="Output raw gRPC response as JSON")
+@click.pass_context
+@handle_grpc_errors
+def delete_orphaned(ctx, as_grpc):
+    """Physically delete all orphaned and decommissioned tenants from the database."""
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    if not stub:
+        click.echo("[FATAL] Could not connect to gRPC server.")
+        return
+        
+    click.echo("Triggering deletion of orphaned/decommissioned tenants via gRPC...")
+    req = hau_pb2.InventoryDeleteOrphanedRequest()
+    resp = stub.InventoryDeleteOrphaned(req)
+    
+    if as_grpc:
+        print_grpc_json(resp)
+        return
+        
+    if resp.success:
+        click.echo(f"✅ {resp.message}")
+    else:
+        click.echo(f"❌ Failed: {resp.message}")
+        sys.exit(1)
+
 @inventory_cli.command(name='update-customization')
 @click.argument('tenant_slug')
 @click.option('--category', help='Tenant category (e.g. INTERNAL, CUSTOMER)')

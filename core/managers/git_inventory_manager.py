@@ -229,8 +229,9 @@ class GitInventoryManager:
                 branch_list = []
                 for b, auth_data in active_branches.items():
                     author = auth_data.get('author_name', 'Unknown')
-                    if p.get("fullPath") in audit_mapping.get('branches', {}) and b in audit_mapping['branches'][p.get("fullPath")]:
-                        author = audit_mapping['branches'][p.get("fullPath")][b]
+                    if author.lower() in ['gia-ai', 'gia ai bot', 'unknown']:
+                        if p.get("fullPath") in audit_mapping.get('branches', {}) and b in audit_mapping['branches'][p.get("fullPath")]:
+                            author = audit_mapping['branches'][p.get("fullPath")][b]
                     branch_list.append({"name": b, "author": author, "last_updated_at": auth_data.get('committed_date')})
             else:
                 branch_list = [
@@ -242,6 +243,7 @@ class GitInventoryManager:
                 "name": p.get("name"),
                 "fullPath": p.get("fullPath"),
                 "branches": branch_list,
+                "native_releases": list(native_release_tags),
                 "containers": []
             }
             
@@ -285,6 +287,10 @@ class GitInventoryManager:
                         if audit_source in active_branches:
                             branch_exists = True
                             author = active_branches[audit_source].get('author_name', 'Unknown')
+                            
+                    if author.lower() in ['gia-ai', 'gia ai bot', 'unknown']:
+                        if full_path in audit_mapping.get('branches', {}) and source_branch in audit_mapping['branches'][full_path]:
+                            author = audit_mapping['branches'][full_path][source_branch]
                             
                     enriched_tags.append({
                         "name": t_name, 

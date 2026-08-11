@@ -203,6 +203,17 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             
             return hau_pb2.InventoryListResponse(success=True, message="Fetched inventory", result_json=json.dumps(result))
 
+    @handle_rpc(hau_pb2.InventoryDeleteOrphanedResponse)
+    def InventoryDeleteOrphaned(self, request, context):
+        with self._get_db_session(write=True) as session:
+            if not session:
+                return hau_pb2.InventoryDeleteOrphanedResponse(success=False, message="Database configuration is missing.")
+            
+            sql_writer = SQLWriter(session)
+            count = sql_writer.delete_orphaned_tenants()
+            
+            return hau_pb2.InventoryDeleteOrphanedResponse(success=True, message=f"Deleted {count} orphaned/decommissioned tenants.")
+
     @handle_rpc(hau_pb2.UpdateTenantCustomizationResponse)
     def UpdateTenantCustomization(self, request, context):
         with self._get_db_session(write=True) as session:
@@ -409,8 +420,10 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             with self._get_db_session(write=False) as session:
                 if session:
                     reader = SQLReader(session)
-                    logs = reader.get_successful_git_releases()
+                    logs = reader.get_all_git_releases_ordered()
                     for log in logs:
+                        if log.action == 'DELETE':
+                            continue
                         if log.project_name:
                             if log.project_name not in audit_mapping['tags']:
                                 audit_mapping['tags'][log.project_name] = {}
@@ -421,6 +434,8 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                                 audit_mapping['tags'][log.project_name][log.version_tag] = log.source_branch
                             if log.target_branch and log.target_branch not in audit_mapping['branches'][log.project_name]:
                                 audit_mapping['branches'][log.project_name][log.target_branch] = log.actor
+                            if log.source_branch and log.source_branch not in audit_mapping['branches'][log.project_name]:
+                                audit_mapping['branches'][log.project_name][log.source_branch] = log.actor
 
                     project_name = request.project_name if request.project_name else None
                     if project_name:
@@ -631,14 +646,19 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                     ns = ", ".join(deploy_info.get('namespaces', []))
                     msg = f"SAFETY ABORT: Container '{short_image}' is actively deployed in namespaces: {ns}."
                     
+                    actor_name = getattr(request, 'author', None)
+                    if not actor_name or actor_name == "Unknown":
+                        actor_name = extract_client_id(context)
+                        
                     log = sql_writer.create_git_release_audit_log(
                         project_name=full_project_path,
                         action="DELETE",
-                        actor=extract_client_id(context),
+                        actor=actor_name,
                         status="FAILED",
                         source_branch=branch_name,
                         target_branch=None,
-                        merge_request_id=None
+                        merge_request_id=None,
+                        version_tag=container_tag
                     )
                     log.error_message = msg
                     session.commit()
@@ -666,16 +686,22 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 
         final_msg = "\n".join(messages)
         
+        # Determine the correct author from the request or fallback
+        actor_name = getattr(request, 'author', None)
+        if not actor_name or actor_name == "Unknown":
+            actor_name = extract_client_id(context)
+            
         with self._get_db_session(write=True) as session:
             sql_writer = SQLWriter(session)
             log = sql_writer.create_git_release_audit_log(
                 project_name=full_project_path,
                 action="DELETE",
-                actor=extract_client_id(context),
+                actor=actor_name,
                 status="SUCCESS" if overall_success else "FAILED",
                 source_branch=branch_name,
                 target_branch=None,
-                merge_request_id=None
+                merge_request_id=None,
+                version_tag=container_tag
             )
             if not overall_success:
                 log.error_message = final_msg

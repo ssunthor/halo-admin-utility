@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 import logging
@@ -12,7 +13,7 @@ from halo_admin_utility import load_config
 from core.database.database import get_engine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-5s - [%(name)s] - %(message)s')
-logger = logging.getLogger("alter_git_container")
+logger = logging.getLogger("alter_table")
 
 def main():
     config = load_config()
@@ -22,18 +23,18 @@ def main():
         logger.error("No write_dsn found in config/settings.yaml")
         sys.exit(1)
         
-    logger.info("Connecting to the database to alter git_container...")
+    logger.info("Connecting to the database...")
     engine = get_engine(write_dsn)
     
-    alter_query = text("ALTER TABLE git_container ADD COLUMN IF NOT EXISTS has_native_release BOOLEAN DEFAULT FALSE;")
+    alter_query = text("ALTER TABLE git_project ADD COLUMN IF NOT EXISTS native_releases JSON DEFAULT '[]';")
     
     try:
         with engine.connect() as conn:
             conn.execute(alter_query)
             conn.commit()
-        logger.info("✅ Successfully added 'has_native_release' column to 'git_container' table.")
+        logger.info("✅ Successfully executed alter query.")
     except Exception as e:
-        logger.error(f"Failed to alter table: {e}")
+        logger.error(f"Failed to execute query: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

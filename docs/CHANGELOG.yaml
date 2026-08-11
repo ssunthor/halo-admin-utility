@@ -15,6 +15,20 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.1.4
+  date: "2026-08-11"
+  author: "Martin Kecka"
+  changes:
+    - category: "✨ New Features & Enhancements"
+      items:
+        - "Enhanced `git inventory` CLI to strictly filter out fully deleted tags without release notes, and group remaining audit-only tags under a dedicated `🗑️ Inactive Releases (Audit)` section with a clear `[Inactive]` flag to reduce clutter."
+    - category: "🐛 Bug Fixes & Resilience"
+      items:
+        - "Fixed a edge-case in `ContainerRegistryManager` where deleting a non-existent container tag would return a GitLab 403 Forbidden error, subsequently failing dual branch/container delete operations."
+        - "Updated `GitReleaseAuditLog` SQL insertion logic to correctly populate the `version_tag` during `git delete` operations, ensuring accurate GitOps Audit traceability for container deletions."
+        - "Fixed `git inventory` authorship attribution by ignoring `DELETE` audit events and including `GIT_RETRY` actions, ensuring feature branches are correctly attributed to their authors instead of the person who deleted the branch."
+        - "Updated Git inventory synchronization to track `native_releases` at the project level, resolving an issue where all deleted/inactive tags were indiscriminately marked as having native release notes."
+
 - version: 0.1.3
   date: "2026-08-10"
   author: "Martin Kecka"
@@ -24,6 +38,23 @@
         - "Implemented dynamic Rancher cluster token retrieval directly from Vault, eliminating hardcoded local credentials."
         - "Created `core/clients/vault_client.py` (`VaultClient`) to properly abstract `hvac` token retrieval logic away from the core managers."
         - "Refactored `kube_manager.py` to utilize `VaultClient` for dynamically refreshing cluster credentials without overwriting local configurations (e.g., `app_cluster_name` and `halo_cluster_name`)."
+        - "Elevated component version pinning out of the generic configuration payload by adding a dedicated `component_versions` JSON column to the `TenantCustomization` schema."
+    - category: "✨ New Features & Enhancements"
+      items:
+        - "Added a 60-second keep-alive heartbeat log for long-running GitLab pipeline jobs (such as `container_build`) to provide active feedback."
+        - "Implemented smart pipeline cancellation in the release orchestrator: when a mandatory early stage (like linting) fails, HAU automatically intercepts and proactively cancels expensive downstream jobs (like `container_build` and `container_scanning`) via the GitLab API to drastically reduce wasted CI runner time."
+        - "Implemented non-destructive tenant orphanage to prevent accidental deletion of `TenantCustomization` configurations during temporary namespace outages."
+        - "Introduced new `ORPHANED`, `DECOMMISSIONING`, and `DECOMMISSIONED` states to `LifecycleState`."
+        - "Added `InventoryDeleteOrphaned` gRPC endpoint and `hau inventory delete-orphaned` CLI command to manually purge orphaned or decommissioned tenants and their associated customizations."
+    - category: "🐛 Bug Fixes & Resilience"
+      items:
+        - "Fixed audit log tracking to properly fallback and display the human actor instead of `gia-ai` for branches and tags created via HAU."
+        - "Updated `SQLReader` to fetch all audit logs instead of just successful ones to ensure accurate mapping even for failed pipeline runs."
+        - "Enhanced `git retry` to bypass GitLab's permanent `[skip ci]` pipeline blacklisting by programmatically pushing an empty trigger commit via the Commits API."
+        - "Fixed GitOps MR orchestration to explicitly prevent unintended source branch deletion by propagating the `--delete-branch` CLI flag (which now safely defaults to `False`) directly into the GitLab creation payload."
+    - category: "🧹 Refactoring & Chores"
+      items:
+        - "Consolidated four legacy one-time database migration scripts into a single universal `alter_table.py` script."
 
 - version: '0.1.2'
   date: '2026-08-07'

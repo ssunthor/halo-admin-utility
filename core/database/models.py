@@ -14,6 +14,9 @@ class LifecycleState(enum.Enum):
     AI_BURN_IN = "AI_BURN_IN"
     GO_LIVE_APPROVED = "GO_LIVE_APPROVED"
     ACTIVE_BILLING = "ACTIVE_BILLING"
+    ORPHANED = "ORPHANED"
+    DECOMMISSIONING = "DECOMMISSIONING"
+    DECOMMISSIONED = "DECOMMISSIONED"
 
 class CollectorHealth(enum.Enum):
     PROVISIONING = "PROVISIONING"
@@ -55,6 +58,7 @@ class TenantCustomization(Base):
     purpose = Column(String(255), nullable=True)
     maintenance_window = Column(String(255), nullable=True)
     configuration_payload = Column(JSON, default=dict)
+    component_versions = Column(JSON, default=dict)
 
     tenant = relationship("HaloTenant", back_populates="customization")
 
@@ -132,6 +136,7 @@ class GitProject(Base):
     
     is_deprecated = Column(Boolean, default=False)
     is_ignored = Column(Boolean, default=False)
+    native_releases = Column(JSON, default=list)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

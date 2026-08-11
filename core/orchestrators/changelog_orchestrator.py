@@ -41,7 +41,12 @@ class ChangelogOrchestrator:
         if content.startswith("```yaml"): content = content[7:]
         if content.startswith("```"): content = content[3:]
         if content.endswith("```"): content = content[:-3]
-        return content.strip()
+        
+        content = content.strip()
+        # Fix common YAML syntax error where LLM escapes single quotes with a backslash
+        content = content.replace("\\'", "''")
+        
+        return content
 
     def _extract_features(self, code_chunk: str) -> str:
         messages = [{"role": "user", "content": EXTRACT_FEATURES_PROMPT + "\n\nCODE:\n" + code_chunk}]
@@ -65,7 +70,12 @@ class ChangelogOrchestrator:
         if content.startswith("```yaml"): content = content[7:]
         if content.startswith("```"): content = content[3:]
         if content.endswith("```"): content = content[:-3]
-        return content.strip()
+        
+        content = content.strip()
+        # Fix common YAML syntax error where LLM escapes single quotes with a backslash
+        content = content.replace("\\'", "''")
+        
+        return content
         
     def generate_for_commits(self, repo_local_path: str, start_commit: str, end_commit: str, author: str, date_str: str, version: str, commits_list: list = None):
         """

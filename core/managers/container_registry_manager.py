@@ -84,7 +84,7 @@ class ContainerRegistryManager:
                     repo.tags.delete(tag_name)
                     deleted = True
                 except gitlab.exceptions.GitlabDeleteError as e:
-                    if e.response_code != 404:
+                    if e.response_code not in (403, 404):
                         return False, f"Failed to delete tag '{tag_name}' in repository {repo.id}: {e}"
                 except Exception as e:
                     return False, f"Error deleting tag '{tag_name}' in repository {repo.id}: {e}"

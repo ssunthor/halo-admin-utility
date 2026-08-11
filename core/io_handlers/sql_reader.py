@@ -28,6 +28,7 @@ class SQLReader:
                 "purpose": t.customization.purpose if t.customization else None,
                 "maintenance_window": t.customization.maintenance_window if t.customization else None,
                 "configuration_payload": t.customization.configuration_payload if t.customization else {},
+                "component_versions": t.customization.component_versions if t.customization else {},
                 "url": t.url
             }
             
@@ -92,18 +93,30 @@ class SQLReader:
             )
             
         active_deployments = self.get_active_deployments_counts()
-        audit_logs = self.get_successful_git_releases()
+        all_logs = self.get_all_git_releases_ordered()
+        
         audit_mapping = {}
-        for log in audit_logs:
-            if log.version_tag and log.project_name:
-                if log.project_name not in audit_mapping:
-                    audit_mapping[log.project_name] = {}
-                audit_mapping[log.project_name][log.version_tag] = log.source_branch
+        tag_status = {}
+        tag_author = {}
+        tag_created = {}
+        
+        for log in all_logs:
+            if log.version_tag and log.project_name and log.status == 'SUCCESS':
+                key = (log.project_name, log.version_tag)
+                if key not in tag_status:
+                    tag_status[key] = log.action
+                    tag_author[key] = log.actor
+                    tag_created[key] = log.timestamp.isoformat()
+                    
+                if log.action in ('GIT_RELEASE', 'GIT_RETRY'):
+                    if log.project_name not in audit_mapping:
+                        audit_mapping[log.project_name] = {}
+                    if log.version_tag not in audit_mapping[log.project_name]:
+                        audit_mapping[log.project_name][log.version_tag] = log.source_branch
 
         projects = query.all()
         result = []
         for p in projects:
-            # FIX: Use project_path to map correctly from audit log full paths!
             p_audit = audit_mapping.get(p.project_path, {})
             branches = {b.name: {"author": b.author, "last_updated_at": b.last_updated_at.isoformat() if getattr(b, "last_updated_at", None) else None} for b in p.branches}
             
@@ -112,6 +125,7 @@ class SQLReader:
             features = []
             standalone_features = []
             core_environments = []
+            inactive_releases = []
             
             matched_containers = set()
             for c in p.containers:
@@ -128,7 +142,8 @@ class SQLReader:
                     "created_at": c.tag_created_at.isoformat() if c.tag_created_at else "unknown",
                     "active_deployments": deploy_count,
                     "active_namespaces": deploy_namespaces,
-                    "has_native_release": c.has_native_release
+                    "has_native_release": c.has_native_release,
+                    "is_inactive": False
                 }
                 
                 if tag.startswith('v') and '-dev' not in tag:
@@ -161,6 +176,33 @@ class SQLReader:
                                 features.append(feat_info)
                             matched_containers.add(tag)
                             break
+                            
+            # Process inactive releases
+            for key, action in tag_status.items():
+                if key[0] == p.project_path and action == 'DELETE':
+                    tag = key[1]
+                    if tag not in matched_containers:
+                        has_native_release = tag in (p.native_releases or [])
+                        if not has_native_release:
+                            continue
+                            
+                        inactive_info = {
+                            "tag": tag,
+                            "author": tag_author.get(key, "Unknown"),
+                            "created_at": tag_created.get(key, "unknown"),
+                            "active_deployments": 0,
+                            "active_namespaces": [],
+                            "has_native_release": True,
+                            "is_inactive": True
+                        }
+                        if tag.startswith('v') and '-dev' not in tag:
+                            inactive_info["branch"] = "main" if "main" in branches else "master"
+                            inactive_info["is_git_tag"] = True
+                            inactive_info["branch_exists"] = False
+                            inactive_releases.append(inactive_info)
+                        elif tag.startswith('v') and '-dev' in tag:
+                            inactive_info["source_feature"] = p_audit.get(tag, "Unknown")
+                            inactive_releases.append(inactive_info)
                             
             for c in p.containers:
                 if c.tag_name not in matched_containers:
@@ -198,7 +240,8 @@ class SQLReader:
                     "pre_releases": sorted(pre_releases, key=lambda x: x['tag'], reverse=True),
                     "features": sorted(features, key=lambda x: x['branch']),
                     "standalone_features": sorted(standalone_features, key=lambda x: x['tag']),
-                    "active_branches_without_containers": sorted(active_branches_without_containers, key=lambda x: x['branch'])
+                    "active_branches_without_containers": sorted(active_branches_without_containers, key=lambda x: x['branch']),
+                    "inactive_releases": sorted(inactive_releases, key=lambda x: x['tag'], reverse=True)
                 }
             }
             result.append(proj_data)
@@ -254,6 +297,9 @@ class SQLReader:
 
     def get_successful_git_releases(self):
         return self.session.query(GitReleaseAuditLog).filter(GitReleaseAuditLog.status == 'SUCCESS').order_by(GitReleaseAuditLog.timestamp.desc()).all()
+
+    def get_all_git_releases_ordered(self):
+        return self.session.query(GitReleaseAuditLog).order_by(GitReleaseAuditLog.timestamp.desc()).all()
 
     def get_active_git_release_audit_log(self, project_name: str):
         return self.session.query(GitReleaseAuditLog).filter_by(

@@ -185,6 +185,8 @@ class ReleaseOrchestrator:
         source_version = "0.0.0"
         top_entry_source = {}
         
+        missing_changelog = True
+        
         try:
             target_raw = self.gitlab_manager.fetch_raw_yaml(project_name, 'docs/CHANGELOG.yaml', branch=target_branch)
             parsed_target = yaml.safe_load(target_raw)
@@ -199,6 +201,7 @@ class ReleaseOrchestrator:
             if isinstance(parsed_source, list) and len(parsed_source) > 0:
                 top_entry_source = parsed_source[0]
                 source_version = top_entry_source.get('version', '0.0.0')
+                missing_changelog = False
         except Exception:
             pass
             
@@ -218,6 +221,8 @@ class ReleaseOrchestrator:
         
         def _get_tag(v_str):
             v = str(v_str)
+            if v == "GENERATING":
+                return v
             if target_branch == 'dev' and not v.endswith('-dev'):
                 v += '-dev'
             if not v.startswith('v'):
@@ -225,7 +230,8 @@ class ReleaseOrchestrator:
             return v
             
         if audit_log and sql_writer:
-            sql_writer.update_git_release_audit_log(audit_log.id, version_tag=_get_tag(version))
+            initial_tag = "GENERATING" if missing_changelog else _get_tag(version)
+            sql_writer.update_git_release_audit_log(audit_log.id, version_tag=initial_tag)
 
         final_yaml = ""
         
@@ -297,20 +303,32 @@ class ReleaseOrchestrator:
                     with open(cl_path, 'w') as f:
                         f.write(full_backfill_yaml)
                         
+                    parsed_backfill = None
                     try:
                         parsed_backfill = yaml.safe_load(full_backfill_yaml)
-                        if isinstance(parsed_backfill, list) and len(parsed_backfill) > 0:
-                            top_entry_source = parsed_backfill[0]
-                            version = top_entry_source.get('version', '0.1.0')
-                        if audit_log and sql_writer:
-                            sql_writer.update_git_release_audit_log(
-                                audit_log.id, 
-                                changelog_generation_method="AUTO_BACKFILLED_LLM", 
-                                merged_features_json={"raw_yaml": full_backfill_yaml},
-                                version_tag=_get_tag(version)
-                            )
                     except Exception as e:
-                        logger.error(f"[GitRelease] Failed to parse backfilled changelog: {e}")
+                        err_msg = f"Failed to parse backfilled changelog YAML: {e}"
+                        logger.error(f"[GitRelease] {err_msg}")
+                        yield {"success": False, "message": err_msg}
+                        return
+
+                    if isinstance(parsed_backfill, list) and len(parsed_backfill) > 0:
+                        top_entry_source = parsed_backfill[0]
+                        version = str(top_entry_source.get('version'))
+                        if not version or version == "None":
+                            yield {"success": False, "message": "Missing version in backfilled changelog YAML."}
+                            return
+                    else:
+                        yield {"success": False, "message": "Backfilled changelog YAML is empty or malformed."}
+                        return
+                        
+                    if audit_log and sql_writer:
+                        sql_writer.update_git_release_audit_log(
+                            audit_log.id, 
+                            changelog_generation_method="AUTO_BACKFILLED_LLM", 
+                            merged_features_json={"raw_yaml": full_backfill_yaml},
+                            version_tag=_get_tag(version)
+                        )
                         
                     yield "Full changelog backfill complete. Committing and pushing docs/CHANGELOG.yaml..."
                     final_yaml = full_backfill_yaml
@@ -370,19 +388,28 @@ class ReleaseOrchestrator:
                     with open(cl_path, 'w') as f:
                         f.write(new_content)
                         
+                    parsed_new = None
                     try:
                         parsed_new = yaml.safe_load(final_yaml)
-                        if isinstance(parsed_new, list) and len(parsed_new) > 0:
-                            top_entry_source = parsed_new[0]
-                        if audit_log and sql_writer:
-                            sql_writer.update_git_release_audit_log(
-                                audit_log.id, 
-                                changelog_generation_method="AUTO_GENERATED_LLM", 
-                                merged_features_json={"raw_yaml": final_yaml},
-                                version_tag=_get_tag(version)
-                            )
                     except Exception as e:
-                        logger.error(f"[GitRelease] Failed to parse newly generated changelog for commit msg: {e}")
+                        err_msg = f"Failed to parse newly generated changelog for commit msg: {e}"
+                        logger.error(f"[GitRelease] {err_msg}")
+                        yield {"success": False, "message": err_msg}
+                        return
+
+                    if isinstance(parsed_new, list) and len(parsed_new) > 0:
+                        top_entry_source = parsed_new[0]
+                    else:
+                        yield {"success": False, "message": "Generated changelog YAML is empty or malformed."}
+                        return
+
+                    if audit_log and sql_writer:
+                        sql_writer.update_git_release_audit_log(
+                            audit_log.id, 
+                            changelog_generation_method="AUTO_GENERATED_LLM", 
+                            merged_features_json={"raw_yaml": final_yaml},
+                            version_tag=_get_tag(version)
+                        )
                         
                     yield f"Committing and pushing generated changelog (v{next_version})..."
                 
@@ -717,9 +744,44 @@ class ReleaseOrchestrator:
                 if p.status == 'skipped' and p.ref.startswith('refs/merge-requests/'):
                     mr_iid = int(p.ref.split('/')[2])
                     mr = project.mergerequests.get(mr_iid)
-                    new_p = mr.pipelines.create()
-                    pipeline_id = new_p.id
-                    yield f"Created new MR pipeline #{pipeline_id} to replace the skipped one."
+                    
+                    commit = project.commits.get(mr.sha)
+                    commit_text = (commit.title + " " + commit.message).lower()
+                    
+                    if '[skip ci]' in commit_text or '[ci skip]' in commit_text:
+                        yield "⚠️ The latest commit contains '[skip ci]'. GitLab permanently skips pipelines for this commit."
+                        yield "Pushing an empty trigger commit to force CI execution..."
+                        try:
+                            new_commit = project.commits.create({
+                                'branch': mr.source_branch,
+                                'commit_message': 'chore: trigger CI pipeline via git retry',
+                                'actions': [],
+                                'allow_empty': True
+                            })
+                            yield "Empty trigger commit pushed successfully."
+                            import time
+                            
+                            new_pipeline = None
+                            for _ in range(30):
+                                time.sleep(1)
+                                commit_pipelines = project.pipelines.list(sha=new_commit.id)
+                                if commit_pipelines:
+                                    new_pipeline = commit_pipelines[0]
+                                    break
+                                    
+                            if new_pipeline:
+                                pipeline_id = new_pipeline.id
+                                yield f"Created new MR pipeline #{pipeline_id} via trigger commit."
+                            else:
+                                yield f"Trigger commit pushed, but no pipeline generated after 30s."
+                                return
+                        except Exception as e:
+                            yield f"Failed to push trigger commit: {e}"
+                            return
+                    else:
+                        new_p = mr.pipelines.create()
+                        pipeline_id = new_p.id
+                        yield f"Created new MR pipeline #{pipeline_id} to replace the skipped one."
                     
                     if audit_log and sql_writer and not audit_log.source_branch:
                         sql_writer.update_git_release_audit_log(audit_log.id, source_branch=mr.source_branch, target_branch=mr.target_branch, merge_request_id=str(mr.iid))

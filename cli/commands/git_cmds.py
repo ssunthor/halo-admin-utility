@@ -151,9 +151,10 @@ def git_inventory(ctx, as_grpc, project):
                 if 'source_feature' in c and c['source_feature'] != "Unknown":
                     extra = f" (Feature: {c['source_feature']})"
                     
+                inactive_str = click.style(" [Inactive]", fg='red', bold=True) if c.get('is_inactive') else ""
                 native_rel_str = click.style(" [📜 Release Notes]", fg='magenta', bold=True) if c.get('has_native_release') else ""
                 
-                click.echo(f"      - {label}{tag_name}{extra}{active_str}{native_rel_str}{date_str} | Author: {author}")
+                click.echo(f"      - {label}{tag_name}{extra}{active_str}{native_rel_str}{inactive_str}{date_str} | Author: {author}")
                 
             main_branch = next((c for c in inv.get('core_environments', []) if c.get('branch') in ['main', 'master']), None)
             dev_branch = next((c for c in inv.get('core_environments', []) if c.get('branch') == 'dev'), None)
@@ -193,6 +194,10 @@ def git_inventory(ctx, as_grpc, project):
                 for b in inv['active_branches_without_containers']:
                     updated_str = f" | Branch Updated: {b.get('last_updated_at')}" if b.get('last_updated_at') else ""
                     click.echo(f"      - 🌿 {click.style(b['branch'], fg='white', bold=True)}{updated_str} | Author: {b.get('author', 'Unknown')}")
+                    
+            if inv.get('inactive_releases'):
+                click.secho(f"   🗑️ Inactive Releases (Audit):", fg='red', dim=True)
+                for c in inv['inactive_releases']: print_container(c, "🚧 " if '-dev' in c.get('tag', '') else "🚀 ")
             click.echo()
             
     except json.JSONDecodeError:
@@ -306,7 +311,7 @@ def git_checkout(ctx, project, branch, as_grpc):
         click.secho(f"\n❌ Checkout Failed: {resp.message}", fg='red')
 
 @git_cli.command(name='release')
-@click.option('--repo', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
+@click.option('--project', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
 @click.option('--source', default='feat/changelog', help="Source branch to merge from")
 @click.option('--target', default='dev', help="Target branch to merge to")
 @click.option('--skip-changelog', is_flag=True, help="Skip generating changelog if missing")
@@ -315,13 +320,13 @@ def git_checkout(ctx, project, branch, as_grpc):
 @click.option('--author', type=str, help="Override author (will resolve to GitLab user)")
 @click.option('--dry-run', is_flag=True, help="Simulate the release process without modifying GitLab or pushing commits.")
 @click.pass_context
-def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug, author, dry_run):
+def git_release(ctx, project, source, target, skip_changelog, delete_branch, debug, author, dry_run):
     """Executes a GitOps merge and release (with pipeline monitoring and tagging)."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
     
     req = hau_pb2.GitReleaseRequest(
-        project_name=repo,
+        project_name=project,
         source_branch=source,
         target_branch=target,
         skip_changelog_generation=skip_changelog,
@@ -332,7 +337,7 @@ def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug,
     )
     
     mode_str = "[DRY-RUN] " if dry_run else ""
-    click.echo(f"{mode_str}Initiating release pipeline for {repo} ({source} -> {target})...")
+    click.echo(f"{mode_str}Initiating release pipeline for {project} ({source} -> {target})...")
     
     try:
         responses = stub.GitRelease(req)
@@ -350,14 +355,14 @@ def git_release(ctx, repo, source, target, skip_changelog, delete_branch, debug,
         click.secho(f"gRPC Error: {str(e)}", fg="red")
 
 @git_cli.command(name="retry")
-@click.option('--repo', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
+@click.option('--project', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
 @click.option('--pipeline', type=int, help="ID of the pipeline to retry")
 @click.option('--merge', type=int, help="ID of the Merge Request to retry")
 @click.option('--skip-warnings', is_flag=True, help="Skip retrying if the pipeline is already successful (ignore warnings)")
 @click.option('--debug', is_flag=True, help="Stream detailed job trace logs from the pipeline")
 @click.option('--author', type=str, help="Override author (will resolve to GitLab user)")
 @click.pass_context
-def git_retry(ctx, repo, pipeline, merge, skip_warnings, debug, author):
+def git_retry(ctx, project, pipeline, merge, skip_warnings, debug, author):
     """Retries a failed GitLab pipeline or Merge Request and streams its progress."""
     if not pipeline and not merge:
         click.secho("❌ You must provide either --pipeline or --merge", fg="red")
@@ -370,7 +375,7 @@ def git_retry(ctx, repo, pipeline, merge, skip_warnings, debug, author):
     stub = get_hau_stub(ctx.obj['config'])
     
     req = hau_pb2.GitRetryRequest(
-        project_name=repo,
+        project_name=project,
         pipeline_id=pipeline or 0,
         merge_id=merge or 0,
         skip_warnings=skip_warnings,
@@ -379,9 +384,9 @@ def git_retry(ctx, repo, pipeline, merge, skip_warnings, debug, author):
     )
     
     if merge:
-        click.echo(f"Initiating retry for MR !{merge} on {repo}...")
+        click.echo(f"Initiating retry for MR !{merge} on {project}...")
     else:
-        click.echo(f"Initiating retry for pipeline #{pipeline} on {repo}...")
+        click.echo(f"Initiating retry for pipeline #{pipeline} on {project}...")
     
     try:
         responses = stub.GitRetry(req)
@@ -402,18 +407,18 @@ def git_retry(ctx, repo, pipeline, merge, skip_warnings, debug, author):
 
 @git_cli.command(name="audit")
 @click.option('--id', type=str, help="ID of the specific audit log to view details")
-@click.option('--repo', type=str, help="Filter by project name")
+@click.option('--project', type=str, help="Filter by project name")
 @click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
 @handle_grpc_errors
 @click.pass_context
-def git_audit(ctx, id, repo, as_grpc):
+def git_audit(ctx, id, project, as_grpc):
     """View Git Release orchestration audit logs and telemetry data."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
     
     req = hau_pb2.GitAuditRequest(
         id=id or "",
-        project_name=repo or ""
+        project_name=project or ""
     )
     
     resp = stub.GitAudit(req)

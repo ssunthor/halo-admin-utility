@@ -57,10 +57,13 @@ class InventoryOrchestrator:
         try:
             deps = km.apps_v1.list_namespaced_deployment(ns_name)
             for d in deps.items:
-                image = d.spec.template.spec.containers[0].image.split('/')[-1] if d.spec.template.spec.containers else "None"
+                full_image = d.spec.template.spec.containers[0].image if d.spec.template.spec.containers else "None"
+                image = full_image.split('/')[-1] if full_image != "None" else "None"
+                registry = "/".join(full_image.split('/')[:-1]) if '/' in full_image else ("None" if full_image == "None" else "docker.io")
                 meta = {
                     "status": f"{d.status.ready_replicas or 0}/{d.status.replicas or 0} Ready",
-                    "image": image
+                    "image": image,
+                    "registry": registry
                 }
                 self.sql_writer.upsert_tenant_resource(tenant.id, 'Deployments', d.metadata.name, meta, app_cluster)
         except Exception as e:
@@ -212,10 +215,13 @@ class InventoryOrchestrator:
                 continue
                 
             tenant = get_tenant(dep_name)
-            image = d.spec.template.spec.containers[0].image.split('/')[-1] if d.spec.template.spec.containers else "None"
+            full_image = d.spec.template.spec.containers[0].image if d.spec.template.spec.containers else "None"
+            image = full_image.split('/')[-1] if full_image != "None" else "None"
+            registry = "/".join(full_image.split('/')[:-1]) if '/' in full_image else ("None" if full_image == "None" else "docker.io")
             meta = {
                 "status": f"{d.status.ready_replicas or 0}/{d.status.replicas or 0} Ready",
-                "image": image
+                "image": image,
+                "registry": registry
             }
             self.sql_writer.upsert_tenant_resource(tenant.id, 'GPU_Deployments', dep_name, meta, gpu_cluster)
             

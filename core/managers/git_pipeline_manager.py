@@ -11,7 +11,7 @@ class GitPipelineManager:
         self.url = self.config['external_services']['gitlab']['url']
         self.token = self.config['external_services']['gitlab'].get('bot_token')
 
-    def create_and_merge_mr(self, project_path, source_branch, target_branch, commit_message, keep_branch=False, assignee_id=None):
+    def create_and_merge_mr(self, project_path, source_branch, target_branch, commit_message, keep_branch=True, assignee_id=None):
         try:
             gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
             project = gl.projects.get(project_path)
@@ -24,7 +24,8 @@ class GitPipelineManager:
                     'source_branch': source_branch,
                     'target_branch': target_branch,
                     'title': f"HAU Auto-Release: {source_branch} -> {target_branch}",
-                    'description': commit_message
+                    'description': commit_message,
+                    'remove_source_branch': not keep_branch
                 }
                 if assignee_id:
                     mr_payload['assignee_ids'] = [assignee_id]
@@ -104,7 +105,10 @@ class GitPipelineManager:
         job_states = {}
         job_trace_offsets = {}
         job_start_times = {}
+        job_last_keepalive = {}
         telemetry = {"jobs": [], "footprint_mb": None}
+        failed_blocking_stages = set()
+        canceled_jobs = set()
         
         while pipeline.status in ['running', 'pending', 'created', 'waiting_for_resource', 'preparing']:
             jobs = pipeline.jobs.list(all=True)
@@ -143,7 +147,11 @@ class GitPipelineManager:
                             duration = time.time() - job_start_times.get(job.name, time.time())
                         yield f"  ✅ Job '{job.name}' (Stage: {job.stage}) completed successfully in {duration:.1f}s."
                     elif job.status == 'failed':
-                        yield f"  ❌ Job '{job.name}' (Stage: {job.stage}) failed."
+                        allow_failure = getattr(job, 'allow_failure', False)
+                        if allow_failure:
+                            yield f"  ⚠️ Job '{job.name}' (Stage: {job.stage}) failed (allowed to fail)."
+                        else:
+                            yield f"  ❌ Job '{job.name}' (Stage: {job.stage}) failed."
                         try:
                             p_job = project.jobs.get(job.id)
                             trace_bytes = p_job.trace()
@@ -157,10 +165,32 @@ class GitPipelineManager:
                                 yield f"    ----------------------------------------"
                         except Exception as e:
                             yield f"      (Could not fetch trace: {e})"
+                        
+                        if not allow_failure:
+                            failed_blocking_stages.add(job.stage)
+                            
                     elif job.status == 'running':
                         yield f"  ▶️ Job '{job.name}' (Stage: {job.stage}) is now RUNNING..."
                     job_states[job.name] = job.status
                     
+                if job.status == 'running':
+                    now = time.time()
+                    last_ka = job_last_keepalive.get(job.name, job_start_times.get(job.name, now))
+                    if now - last_ka >= 60:
+                        elapsed = now - job_start_times.get(job.name, now)
+                        yield f"  ⏳ Job '{job.name}' (Stage: {job.stage}) is still running... ({int(elapsed)}s elapsed)"
+                        job_last_keepalive[job.name] = now
+                    
+
+                if job.status in ['running', 'pending', 'created', 'waiting_for_resource'] and job.id not in canceled_jobs:
+                    if failed_blocking_stages and job.stage not in failed_blocking_stages:
+                        yield f"  🛑 Canceling job '{job.name}' (Stage: {job.stage}) to save time (previous required stage failed)."
+                        try:
+                            p_job = project.jobs.get(job.id)
+                            p_job.cancel()
+                            canceled_jobs.add(job.id)
+                        except Exception as e:
+                            yield f"  (Could not cancel job: {e})"
 
                 if job.status in ['running', 'pending']:
                     active_jobs += 1
@@ -267,7 +297,9 @@ class GitPipelineManager:
                     "trace": None
                 }
                 if job.status == 'failed':
-                    yield f"  - Failed Job: {job.name} (Stage: {job.stage}) (Web: {job.web_url})"
+                    allow_failure = getattr(job, 'allow_failure', False)
+                    status_str = " (allowed to fail)" if allow_failure else ""
+                    yield f"  - Failed Job: {job.name} (Stage: {job.stage}){status_str} (Web: {job.web_url})"
                     try:
                         p_job = project.jobs.get(job.id)
                         trace_bytes = p_job.trace()

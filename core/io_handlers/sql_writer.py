@@ -17,13 +17,30 @@ class SQLWriter:
 
     def clean_orphaned_tenants(self):
         self.session.flush()
-        from core.database.models import HaloTenant, TenantResourceInventory
+        from core.database.models import HaloTenant, TenantResourceInventory, LifecycleState
         subq = self.session.query(TenantResourceInventory.tenant_id).subquery()
-        orphans = self.session.query(HaloTenant).filter(~HaloTenant.id.in_(subq.select())).all()
+        orphans = self.session.query(HaloTenant).filter(
+            ~HaloTenant.id.in_(subq.select()),
+            HaloTenant.lifecycle_state != LifecycleState.ORPHANED,
+            HaloTenant.lifecycle_state != LifecycleState.DECOMMISSIONED
+        ).all()
         for orphan in orphans:
-            logger.info(f"Deleting orphaned tenant: {orphan.slug_name}")
+            logger.info(f"Marking orphaned tenant: {orphan.slug_name} as ORPHANED")
+            orphan.lifecycle_state = LifecycleState.ORPHANED
+        self.session.flush()
+
+    def delete_orphaned_tenants(self):
+        self.session.flush()
+        from core.database.models import HaloTenant, LifecycleState
+        orphans = self.session.query(HaloTenant).filter(
+            HaloTenant.lifecycle_state.in_([LifecycleState.ORPHANED, LifecycleState.DECOMMISSIONED])
+        ).all()
+        count = len(orphans)
+        for orphan in orphans:
+            logger.info(f"Physically deleting orphaned/decommissioned tenant: {orphan.slug_name}")
             self.session.delete(orphan)
         self.session.flush()
+        return count
 
     def add_deployment_log(self, tenant_id: str, app_name: str, status: str, action: str, target_version: str = None, message: str = None):
         log = DeploymentAuditLog(
@@ -56,9 +73,13 @@ class SQLWriter:
                 project = GitProject(
                     project_path=project_path,
                     project_name=project_name,
-                    project_type=ptype
+                    project_type=ptype,
+                    native_releases=p.get("native_releases", [])
                 )
                 self.session.add(project)
+                self.session.flush()
+            else:
+                project.native_releases = p.get("native_releases", [])
                 self.session.flush()
                 
             self.session.query(GitBranch).filter_by(project_id=project.id).delete()
@@ -162,7 +183,7 @@ class SQLWriter:
             
         for k, v in kwargs.items():
             if hasattr(tenant.customization, k) and v != "":
-                if k == "configuration_payload" and isinstance(v, str):
+                if k in ["configuration_payload", "component_versions"] and isinstance(v, str):
                     import json
                     try:
                         v = json.loads(v)
@@ -173,7 +194,7 @@ class SQLWriter:
         self.session.flush()
         return True, f"Successfully updated customization for {slug_name}"
 
-    def create_git_release_audit_log(self, project_name: str, action: str, actor: str, status: str, source_branch: str = None, target_branch: str = None, merge_request_id: str = None):
+    def create_git_release_audit_log(self, project_name: str, action: str, actor: str, status: str, source_branch: str = None, target_branch: str = None, merge_request_id: str = None, version_tag: str = None):
         log = GitReleaseAuditLog(
             project_name=project_name,
             action=action,
@@ -182,6 +203,7 @@ class SQLWriter:
             source_branch=source_branch,
             target_branch=target_branch,
             merge_request_id=merge_request_id,
+            version_tag=version_tag,
             changelog_generation_method="N/A",
             merged_features_json={},
             job_details_json={}

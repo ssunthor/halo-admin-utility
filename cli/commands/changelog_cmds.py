@@ -9,21 +9,21 @@ def changelog_cmds():
     pass
 
 @changelog_cmds.command(name='generate')
-@click.option('--repo', required=True, help="Repository name (e.g. ai/halo/pipelines/netflow-dfp)")
+@click.option('--project', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
 @click.option('--branch', default='main', help="Target branch to extract changes for (default: main)")
 @click.pass_context
-def generate_changelog(ctx, repo, branch):
+def generate_changelog(ctx, project, branch):
     """Generates a semantic CHANGELOG.yaml via the HAU gRPC backend."""
     config = ctx.obj['config']
     
-    click.echo(f"Requesting changelog generation for {repo} on branch '{branch}' from HAU server...")
+    click.echo(f"Requesting changelog generation for {project} on branch '{branch}' from HAU server...")
     
     try:
         stub = get_hau_stub(config)
         import hau_pb2
         
         request = hau_pb2.GenerateChangelogRequest(
-            project_name=repo,
+            project_name=project,
             branch_name=branch
         )
         
@@ -42,13 +42,13 @@ def generate_changelog(ctx, repo, branch):
         click.secho(f"gRPC Error: {str(e)}", fg="red")
 
 @changelog_cmds.command(name='backfill')
-@click.option('--repo', required=True, help="Repository name")
+@click.option('--project', required=True, help="Project name")
 @click.option('--branch', default='main', help="Target branch")
 @click.option('--start-version', default='0.1.0', help="Starting version")
 @click.option('--start-commit', default='', help="Optional starting commit hash (exclusive)")
 @click.option('--out', default='backfill_output.yaml', help="Output file path")
 @click.pass_context
-def backfill_changelog(ctx, repo, branch, start_version, start_commit, out):
+def backfill_changelog(ctx, project, branch, start_version, start_commit, out):
     """Backfills a semantic changelog via the HAU gRPC streaming backend."""
     config = ctx.obj['config']
     
@@ -57,7 +57,7 @@ def backfill_changelog(ctx, repo, branch, start_version, start_commit, out):
         import hau_pb2
         
         request = hau_pb2.GitBackfillRequest(
-            project_name=repo,
+            project_name=project,
             branch_name=branch,
             start_version=start_version,
             start_commit=start_commit
@@ -94,11 +94,11 @@ def backfill_changelog(ctx, repo, branch, start_version, start_commit, out):
         click.secho(f"gRPC Error: {str(e)}", fg="red")
 
 @changelog_cmds.command(name='sync')
-@click.option('--repo', required=True, help="Repository name")
+@click.option('--project', required=True, help="Project name")
 @click.option('--branch', default='dev', help="Target branch")
 @click.option('--changelog', required=True, help="Path to the local CHANGELOG.yaml to sync")
 @click.pass_context
-def sync_changelog(ctx, repo, branch, changelog):
+def sync_changelog(ctx, project, branch, changelog):
     """Syncs the changelog by only backfilling missing versions and redoing the latest version."""
     config = ctx.obj['config']
     
@@ -160,7 +160,7 @@ def sync_changelog(ctx, repo, branch, changelog):
         click.echo(f"Starting sync from version {start_version} and date {start_date}...")
         
         request = hau_pb2.GitBackfillRequest(
-            project_name=repo,
+            project_name=project,
             branch_name=branch,
             start_version=start_version,
             start_commit="",

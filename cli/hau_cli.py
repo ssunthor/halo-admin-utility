@@ -117,6 +117,7 @@ from cli.commands.module_cmds import module_cli
 from cli.commands.git_cmds import git_cli
 from cli.commands.inventory_cmds import inventory_cli
 from cli.commands.changelog_cmds import changelog_cmds
+from cli.commands.features_cmds import features_cmds
 
 cli.add_command(start_grpc_server)
 cli.add_command(init_db_cmd)
@@ -124,3 +125,4 @@ cli.add_command(module_cli)
 cli.add_command(git_cli)
 cli.add_command(inventory_cli)
 cli.add_command(changelog_cmds)
+cli.add_command(features_cmds)

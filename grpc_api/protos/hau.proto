@@ -23,6 +23,8 @@ service HauService {
   rpc GitInventorySync(GitInventorySyncRequest) returns (GitInventorySyncResponse);
   rpc UpdateTenantCustomization(UpdateTenantCustomizationRequest) returns (UpdateTenantCustomizationResponse);
   rpc GitDelete(GitDeleteRequest) returns (GitDeleteResponse);
+  rpc ListFeatures(ListFeaturesRequest) returns (ListFeaturesResponse);
+  rpc UpsertFeature(UpsertFeatureRequest) returns (UpsertFeatureResponse);
 }
 
 message InventorySyncRequest {}
@@ -253,4 +255,43 @@ message GitDeleteRequest {
 message GitDeleteResponse {
   bool success = 1;
   string message = 2;
+}
+
+message FeatureCatalogEntry {
+  string id = 1;
+  string feature_name = 2;
+  string description = 3;
+  string product_category = 4;
+  string ui_grouping = 5;
+  string env_variable = 6;
+  string gitops_dependencies_json = 7;
+  string pricing_tiers_json = 10;
+  bool is_paid_addon = 8;
+  bool enabled_by_default = 9;
+}
+
+message ListFeaturesRequest {}
+
+message ListFeaturesResponse {
+  bool success = 1;
+  string message = 2;
+  repeated FeatureCatalogEntry features = 3;
+}
+
+message UpsertFeatureRequest {
+  string feature_name = 1;
+  string description = 2;
+  string product_category = 3;
+  string ui_grouping = 4;
+  string env_variable = 5;
+  string gitops_dependencies_json = 6;
+  string pricing_tiers_json = 9;
+  bool is_paid_addon = 7;
+  bool enabled_by_default = 8;
+}
+
+message UpsertFeatureResponse {
+  bool success = 1;
+  string message = 2;
+  FeatureCatalogEntry feature = 3;
 }

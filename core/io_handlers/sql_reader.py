@@ -8,6 +8,14 @@ class SQLReader:
     def __init__(self, session: Session):
         self.session = session
 
+    def get_feature_catalog(self):
+        from core.database.models import FeatureCatalog
+        return self.session.query(FeatureCatalog).order_by(FeatureCatalog.product_category, FeatureCatalog.ui_grouping).all()
+
+    def get_feature_by_env(self, env_variable: str):
+        from core.database.models import FeatureCatalog
+        return self.session.query(FeatureCatalog).filter_by(env_variable=env_variable).first()
+
     def get_all_inventory(self, tenant_slug: str = None):
         from sqlalchemy.orm import joinedload
         query = self.session.query(HaloTenant).options(joinedload(HaloTenant.customization))
@@ -272,7 +280,8 @@ class SQLReader:
             short_name = project_name.split('/')[-1]
             query = query.filter(or_(
                 GitReleaseAuditLog.project_name == project_name,
-                GitReleaseAuditLog.project_name == short_name
+                GitReleaseAuditLog.project_name == short_name,
+                GitReleaseAuditLog.project_name.like(f"%/{short_name}")
             ))
         records = query.order_by(GitReleaseAuditLog.timestamp.desc()).limit(limit).all()
         result = []

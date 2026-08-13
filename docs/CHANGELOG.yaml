@@ -15,6 +15,19 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.1.5
+  date: "2026-08-13"
+  author: "Martin Kecka"
+  changes:
+    - category: "✨ New Features & Enhancements"
+      items:
+        - "Implemented the `FeatureCatalog` in the database, gRPC layer, and CLI to dynamically manage feature toggles, GitOps dependencies, and pricing tiers for the Halo ecosystem."
+        - "Added `hau features list` and `hau features upsert` CLI commands for dynamic manipulation of the configuration catalog."
+        - "Added `--grpc` option to `hau features list` to output the raw gRPC response as JSON."
+    - category: "🚀 Architecture & Infrastructure"
+      items:
+        - "Engineered `FeatureCatalog` Postgres schema to dynamically track `product_category`, `ui_grouping`, `gitops_dependencies`, and complex `pricing_tiers` matrices."
+
 - version: 0.1.4
   date: "2026-08-11"
   author: "Martin Kecka"

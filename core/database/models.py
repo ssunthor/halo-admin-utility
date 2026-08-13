@@ -144,6 +144,24 @@ class GitProject(Base):
     branches = relationship("GitBranch", back_populates="project", cascade="all, delete-orphan")
     containers = relationship("GitContainer", back_populates="project", cascade="all, delete-orphan")
 
+class FeatureCatalog(Base):
+    __tablename__ = 'feature_catalog'
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    feature_name = Column(String(255), nullable=False)
+    description = Column(String, nullable=True)
+    product_category = Column(String(100), nullable=True)
+    ui_grouping = Column(String(100), nullable=True)
+    env_variable = Column(String(255), nullable=False, unique=True)
+    gitops_dependencies = Column(JSON, default=dict)
+    pricing_tiers = Column(JSON, default=dict)
+    is_paid_addon = Column(Boolean, default=False)
+    enabled_by_default = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class GitBranch(Base):
     __tablename__ = 'git_branch'
     

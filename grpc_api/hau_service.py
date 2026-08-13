@@ -718,6 +718,86 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                     final_msg += f"\nInventory Sync Warning: {sync_resp.message}"
             except Exception as e:
                 logger.error(f"Failed to trigger post-delete inventory sync: {e}")
-                final_msg += f"\nInventory Sync Warning: Failed to trigger sync ({e})"
-                
         return hau_pb2.GitDeleteResponse(success=overall_success, message=final_msg)
+
+    @handle_rpc(hau_pb2.ListFeaturesResponse)
+    def ListFeatures(self, request, context):
+        try:
+            with self._get_db_session(write=False) as session:
+                if not session:
+                    return hau_pb2.ListFeaturesResponse(success=False, message="Database not available.", features=[])
+                reader = SQLReader(session)
+                features = reader.get_feature_catalog()
+                
+                feature_entries = []
+                for f in features:
+                    entry = hau_pb2.FeatureCatalogEntry(
+                        id=f.id,
+                        feature_name=f.feature_name,
+                        description=f.description or "",
+                        product_category=f.product_category or "",
+                        ui_grouping=f.ui_grouping or "",
+                        env_variable=f.env_variable,
+                        gitops_dependencies_json=json.dumps(f.gitops_dependencies),
+                        pricing_tiers_json=json.dumps(f.pricing_tiers) if f.pricing_tiers else "{}",
+                        is_paid_addon=f.is_paid_addon,
+                        enabled_by_default=f.enabled_by_default
+                    )
+                    feature_entries.append(entry)
+                
+            return hau_pb2.ListFeaturesResponse(success=True, message="Fetched features from DB", features=feature_entries)
+        except Exception as e:
+            logger.error(f"[ListFeatures] DB fetch failed: {e}")
+            return hau_pb2.ListFeaturesResponse(success=False, message=str(e), features=[])
+
+    @handle_rpc(hau_pb2.UpsertFeatureResponse)
+    def UpsertFeature(self, request, context):
+        try:
+            with self._get_db_session(write=True) as session:
+                if not session:
+                    return hau_pb2.UpsertFeatureResponse(success=False, message="Database not available.")
+                writer = SQLWriter(session)
+                
+                gitops_deps = {}
+                if request.gitops_dependencies_json:
+                    try:
+                        gitops_deps = json.loads(request.gitops_dependencies_json)
+                    except json.JSONDecodeError:
+                        return hau_pb2.UpsertFeatureResponse(success=False, message="Invalid JSON for gitops_dependencies_json")
+                
+                pricing = {}
+                if getattr(request, 'pricing_tiers_json', None):
+                    try:
+                        pricing = json.loads(request.pricing_tiers_json)
+                    except json.JSONDecodeError:
+                        return hau_pb2.UpsertFeatureResponse(success=False, message="Invalid JSON for pricing_tiers_json")
+                
+                f = writer.upsert_feature(
+                    feature_name=request.feature_name,
+                    env_variable=request.env_variable,
+                    description=request.description,
+                    product_category=request.product_category,
+                    ui_grouping=request.ui_grouping,
+                    gitops_dependencies=gitops_deps,
+                    pricing_tiers=pricing,
+                    is_paid_addon=request.is_paid_addon,
+                    enabled_by_default=request.enabled_by_default
+                )
+                
+                entry = hau_pb2.FeatureCatalogEntry(
+                    id=f.id,
+                    feature_name=f.feature_name,
+                    description=f.description or "",
+                    product_category=f.product_category or "",
+                    ui_grouping=f.ui_grouping or "",
+                    env_variable=f.env_variable,
+                    gitops_dependencies_json=json.dumps(f.gitops_dependencies),
+                    pricing_tiers_json=json.dumps(f.pricing_tiers) if f.pricing_tiers else "{}",
+                    is_paid_addon=f.is_paid_addon,
+                    enabled_by_default=f.enabled_by_default
+                )
+                
+            return hau_pb2.UpsertFeatureResponse(success=True, message="Successfully upserted feature", feature=entry)
+        except Exception as e:
+            logger.error(f"[UpsertFeature] DB upsert failed: {e}")
+            return hau_pb2.UpsertFeatureResponse(success=False, message=str(e))

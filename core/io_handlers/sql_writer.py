@@ -12,6 +12,26 @@ class SQLWriter:
     def __init__(self, session: Session):
         self.session = session
 
+    def upsert_feature(self, feature_name: str, env_variable: str, description: str = None, product_category: str = None, ui_grouping: str = None, gitops_dependencies: dict = None, pricing_tiers: dict = None, is_paid_addon: bool = False, enabled_by_default: bool = False):
+        from core.database.models import FeatureCatalog
+        feature = self.session.query(FeatureCatalog).filter_by(env_variable=env_variable).first()
+        
+        if not feature:
+            feature = FeatureCatalog(env_variable=env_variable)
+            self.session.add(feature)
+            
+        feature.feature_name = feature_name
+        feature.description = description
+        feature.product_category = product_category
+        feature.ui_grouping = ui_grouping
+        feature.gitops_dependencies = gitops_dependencies or {}
+        feature.pricing_tiers = pricing_tiers or {}
+        feature.is_paid_addon = is_paid_addon
+        feature.enabled_by_default = enabled_by_default
+        
+        self.session.flush()
+        return feature
+
     def clear_inventory(self):
         self.session.query(TenantResourceInventory).delete()
 

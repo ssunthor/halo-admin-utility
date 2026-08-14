@@ -801,3 +801,20 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         except Exception as e:
             logger.error(f"[UpsertFeature] DB upsert failed: {e}")
             return hau_pb2.UpsertFeatureResponse(success=False, message=str(e))
+
+    @handle_rpc(hau_pb2.NetboxAuditTenantResponse)
+    def NetboxAuditTenant(self, request, context):
+        try:
+            from core.managers.netbox_audit_manager import NetboxAuditManager
+            
+            manager = NetboxAuditManager(self.config)
+            result = manager.audit_tenant(request.tenant_slug, request.ip_audit)
+            
+            return hau_pb2.NetboxAuditTenantResponse(
+                success=True,
+                message="Audit completed",
+                result_json=json.dumps(result)
+            )
+        except Exception as e:
+            logger.error(f"[NetboxAuditTenant] Failed: {e}")
+            return hau_pb2.NetboxAuditTenantResponse(success=False, message=str(e))

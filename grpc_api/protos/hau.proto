@@ -25,6 +25,7 @@ service HauService {
   rpc GitDelete(GitDeleteRequest) returns (GitDeleteResponse);
   rpc ListFeatures(ListFeaturesRequest) returns (ListFeaturesResponse);
   rpc UpsertFeature(UpsertFeatureRequest) returns (UpsertFeatureResponse);
+  rpc NetboxAuditTenant(NetboxAuditTenantRequest) returns (NetboxAuditTenantResponse);
 }
 
 message InventorySyncRequest {}
@@ -294,4 +295,15 @@ message UpsertFeatureResponse {
   bool success = 1;
   string message = 2;
   FeatureCatalogEntry feature = 3;
+}
+
+message NetboxAuditTenantRequest {
+  string tenant_slug = 1;
+  bool ip_audit = 2;
+}
+
+message NetboxAuditTenantResponse {
+  bool success = 1;
+  string message = 2;
+  string result_json = 3;
 }

@@ -24,10 +24,16 @@ paths:
   proto_source_dir: "grpc_api/protos"
   sera_proto_source_dir: "/ai/assets/protos/sera_standard"
   generated_stubs_path: "/ai/assets/protos/halo_admin_utility/generated"
+  cmc_generated_stubs_path: "/ai/assets/protos/cmd_connector/generated"
 
 database:
   write_dsn: "postgresql://ham_admin_prod_user:EUfOKcHxXpSCdQl10W5IwWGw@slo-aif-hadb.slo.gt-t.net:5432/ham_admin_prod_db"
   read_dsn: "postgresql://ham_admin_prod_user:EUfOKcHxXpSCdQl10W5IwWGw@slo-aif-ha.slo.gt-t.net:5433/ham_admin_prod_db"
+
+connectors:
+  cmc:
+    host: "localhost"
+    port: 50053
 
 external_services:
   vault:
@@ -44,6 +50,12 @@ external_services:
     bot_token: "glpat-5hh1RgoaFNjYUWqeoaRto286MQp1OmQ1CA.01.0y0u9a018"
     project_path: "ai/halo"
     local_clone_path: "/ai/utilities/halo_admin_utility/cache/halo"
+  netbox:
+    dependency_name: "netbox_rest_api"
+    type: "rest_api"
+    url: "https://netbox.gt-t.net"
+    token: "1d97e4548e5c8ae59b1b59f13be062e4880f0a48"
+
 
 rancher_clusters:
   prg:

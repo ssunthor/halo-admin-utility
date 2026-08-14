@@ -56,7 +56,7 @@ PRICING_CVE_RECON = {
     "50001-100000": {"monthly": 21000, "install": 52500}
 }
 
-PRICING_HALO_COMMAND = {
+PRICING_HALO_RESPONSE = {
     "0-100": {"monthly": 1200, "install": 2400},
     "101-200": {"monthly": 1800, "install": 3600},
     "201-500": {"monthly": 2700, "install": 5400},
@@ -75,47 +75,47 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_OVERVIEW",
         "feature_name": "OverallAnalysis",
         "description": "Provides high-level security posture, overall threat analytics, and executive summaries.",
-        "product_category": "Defense Halo Detect",
+        "product_category": "Halo Detect",
         "ui_grouping": "Core Dashboard",
         "gitops_dependencies": {},
         "is_paid_addon": True,
-        "enabled_by_default": True
+        "enabled_by_default": False
     },
     {
         "env_variable": "VITE_SHOW_HOST_INVENTORY",
         "feature_name": "HostInventory",
         "description": "Detailed inventory view of endpoints, OS details, and agent connection states.",
-        "product_category": "Defense Halo Detect",
+        "product_category": "Halo Detect",
         "ui_grouping": "Inventory",
         "gitops_dependencies": {},
         "is_paid_addon": True,
-        "enabled_by_default": True
+        "enabled_by_default": False
     },
     {
         "env_variable": "VITE_SHOW_NETWORK",
         "feature_name": "Network & Firewall",
         "description": "Traditional network monitoring, traffic volumes, and firewall rule analytics.",
-        "product_category": "Defense Halo Detect",
+        "product_category": "Halo Detect",
         "ui_grouping": "Network",
         "gitops_dependencies": {},
         "is_paid_addon": True,
-        "enabled_by_default": True
+        "enabled_by_default": False
     },
     {
         "env_variable": "VITE_SHOW_RAW_DATA",
         "feature_name": "Raw Data Explorer",
         "description": "Allows analysts to query raw, unparsed logs directly from backend data lakes for deep threat hunting.",
-        "product_category": "Defense Halo Detect",
+        "product_category": "Halo Detect",
         "ui_grouping": "Data Exploration",
         "gitops_dependencies": {},
         "is_paid_addon": True,
-        "enabled_by_default": True
+        "enabled_by_default": False
     },
     {
         "env_variable": "VITE_SHOW_GALAXY",
         "feature_name": "NetworkGalaxy",
         "description": "A visual topological graph representation of network communications and log sources.",
-        "product_category": "Defense Halo Command",
+        "product_category": "Halo Detect",
         "ui_grouping": "System Logs",
         "gitops_dependencies": {},
         "is_paid_addon": True,
@@ -125,7 +125,7 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_DESTINATIONS",
         "feature_name": "Destinations Map",
         "description": "Visualizes external IP destinations for threat intelligence and geolocation context.",
-        "product_category": "Defense Halo Command",
+        "product_category": "Halo Detect",
         "ui_grouping": "Global / Threat",
         "gitops_dependencies": {},
         "is_paid_addon": True,
@@ -135,9 +135,9 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_LOG_DNA",
         "feature_name": "System Log DNA / Anomalies",
         "description": "Behavioral analytics and anomaly detection derived from unstructured system logs via AI pipelines.",
-        "product_category": "Defense Halo Command",
+        "product_category": "Halo Detect",
         "ui_grouping": "System Logs",
-        "gitops_dependencies": {"ai/halo/pipelines/syslog-dfp": ">=v0.3.0"},
+        "gitops_dependencies": {"ai/halo/pipelines/syslog-dfp": ">=v0.2.6"},
         "is_paid_addon": True,
         "enabled_by_default": False
     },
@@ -145,7 +145,7 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_NETFLOW_DNA",
         "feature_name": "Network Netflow DNA",
         "description": "Threat detection and behavioral analytics derived specifically from network flow (NetFlow/sFlow) data via Morpheus DFP pipelines.",
-        "product_category": "Defense Halo Command",
+        "product_category": "Halo Detect",
         "ui_grouping": "Netflow / Network",
         "gitops_dependencies": {"ai/halo/pipelines/netflow-dfp": ">=v0.3.0"},
         "is_paid_addon": True,
@@ -155,7 +155,7 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_USER_ACTIVITY",
         "feature_name": "User Activity",
         "description": "Tracks identity events, logins, and detects potential insider threats or compromised credentials.",
-        "product_category": "Defense Halo Command",
+        "product_category": "Halo Detect",
         "ui_grouping": "Identity / IAM",
         "gitops_dependencies": {},
         "is_paid_addon": True,
@@ -165,7 +165,7 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_HOST_FORENSICS",
         "feature_name": "Host Forensics",
         "description": "Deep dive into endpoint activity, process trees, and localized forensic investigation data.",
-        "product_category": "Defense Halo Command",
+        "product_category": "Halo Detect",
         "ui_grouping": "Endpoint Security",
         "gitops_dependencies": {},
         "is_paid_addon": True,
@@ -175,7 +175,7 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_NETBOX",
         "feature_name": "NetboxVulnerabilities",
         "description": "Integrates with NetBox DCIM to display infrastructure vulnerabilities (CVEs) mapped to hardware inventory and network assets.",
-        "product_category": "Defense Halo Recon - CVE",
+        "product_category": "Halo Recon - CVE",
         "ui_grouping": "Vulnerability Mgmt",
         "gitops_dependencies": {},
         "is_paid_addon": True,
@@ -185,7 +185,7 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_CONFIG_ANALYZER",
         "feature_name": "ConfigAnalyzer",
         "description": "Static analysis tool for parsing and evaluating the security of uploaded firewall/network configuration files.",
-        "product_category": "Defense Halo Recon - Configuration",
+        "product_category": "Halo Recon - Configuration",
         "ui_grouping": "Config Mgmt",
         "gitops_dependencies": {"ai/halo/dashboard/config-analyzer-backend": ">=v0.1.0"},
         "is_paid_addon": True,
@@ -195,7 +195,7 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_CONFIG_TRANSLATOR",
         "feature_name": "ConfigTranslator",
         "description": "Cross-vendor utility to convert network configurations (e.g., Cisco IOS, Palo Alto PAN-OS, Fortinet FortiOS).",
-        "product_category": "Defense Halo Recon - Configuration",
+        "product_category": "Halo Recon - Configuration",
         "ui_grouping": "Config Mgmt",
         "gitops_dependencies": {"ai/halo/dashboard/config-analyzer-backend": ">=v0.1.0"},
         "is_paid_addon": True,
@@ -205,7 +205,7 @@ INITIAL_FEATURES = [
         "env_variable": "VITE_SHOW_CONFIG_BUILD_TOOL",
         "feature_name": "PolicyGenerator",
         "description": "Greenfield policy generation tool to automate the creation of new firewall/security policies based on intent.",
-        "product_category": "Defense Halo Recon - Configuration",
+        "product_category": "Halo Recon - Configuration",
         "ui_grouping": "Config Mgmt",
         "gitops_dependencies": {"ai/halo/dashboard/config-analyzer-backend": ">=v0.1.0"},
         "is_paid_addon": True,
@@ -214,9 +214,9 @@ INITIAL_FEATURES = [
 ]
 
 for f in INITIAL_FEATURES:
-    if f["product_category"] == "Defense Halo Command":
-        f["pricing_tiers"] = PRICING_HALO_COMMAND
-    elif f["product_category"] == "Defense Halo Detect":
+    if f["product_category"] == "Halo Response":
+        f["pricing_tiers"] = PRICING_HALO_RESPONSE
+    elif f["product_category"] == "Halo Detect":
         f["pricing_tiers"] = PRICING_DETECT
     elif "CVE" in f["product_category"]:
         f["pricing_tiers"] = PRICING_CVE_RECON

@@ -15,6 +15,20 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.1.6
+  date: "2026-08-14"
+  author: "Martin Kecka"
+  changes:
+    - category: "✨ New Features & Enhancements"
+      items:
+        - "Added `hau netbox audit-tenant <tenant_slug>` CLI command to query NetBox directly for devices and VMs."
+        - "Implemented `NetboxAuditTenant` gRPC endpoint to quickly identify devices and VMs missing the `cmd_slid` or `cmd_gnid` custom fields."
+        - "Removed default IP auditing to eliminate noise. Introduced an `--ip-audit` flag to perform deep interface-level IP validation for devices."
+        - "Integrated `cmc_connector` into HAU to automatically parse `cmd_slid` segments and cross-check the CMD API gateway for populated `a_address` fields, ensuring the Segment `network_code` matches the Netbox tenant."
+        - "Added `cmd_gnid` integration in `cmc_connector` to query the CMD API gateway and ensure the GNID `address1` is populated, ensuring the GNID `network_code` matches the Netbox tenant."
+        - "Added dynamic summary counts (e.g., `[19 Devices, 1 VM]`) to the headers of the CLI audit output for quicker data consumption."
+        - "Integrated `netbox_client.py` with automatic pagination to support large bulk queries seamlessly."
+
 - version: 0.1.5
   date: "2026-08-13"
   author: "Martin Kecka"

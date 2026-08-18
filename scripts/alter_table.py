@@ -30,11 +30,17 @@ def main():
     # [UNIVERSAL ALTER SCRIPT]
     # Modify the `alter_query` below to execute any arbitrary schema changes.
     # --------------------------------------------------------------------------------
-    alter_query = text("ALTER TABLE tenant_customization ADD COLUMN IF NOT EXISTS component_versions JSON DEFAULT '{}';")
+    alter_query1 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_acronym VARCHAR(50);")
+    alter_query2 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(255);")
+    alter_query3 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_group VARCHAR(255);")
+    alter_query4 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS netbox_id INTEGER;")
     
     try:
         with engine.connect() as conn:
-            conn.execute(alter_query)
+            conn.execute(alter_query1)
+            conn.execute(alter_query2)
+            conn.execute(alter_query3)
+            conn.execute(alter_query4)
             conn.commit()
         logger.info("✅ Successfully executed alter query.")
     except Exception as e:

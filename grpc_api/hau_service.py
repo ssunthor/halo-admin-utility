@@ -3,7 +3,6 @@ import functools
 import json
 import os
 import subprocess
-import re
 import threading
 from contextlib import contextmanager
 
@@ -15,6 +14,7 @@ from core.io_handlers.sql_writer import SQLWriter
 from core.orchestrators.inventory_orchestrator import InventoryOrchestrator
 from core.orchestrators.changelog_orchestrator import ChangelogOrchestrator
 from core.orchestrators.release_orchestrator import ReleaseOrchestrator
+from core.orchestrators.delete_orchestrator import DeleteOrchestrator
 
 import datetime
 
@@ -104,7 +104,6 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
     def __init__(self, config):
         self.config = config
         
-        # Initialize Vault client and fetch Rancher tokens
         self.vault_client = None
         if 'vault_paths' in config and 'rancher_system' in config['vault_paths']:
             try:
@@ -243,12 +242,7 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             return hau_pb2.GenerateChangelogResponse(success=False, message=checkout_res, changelog_yaml="")
             
         local_base = self.config['external_services']['gitlab']['local_clone_path']
-        project_path = self.config['external_services']['gitlab']['project_path']
-        rel_path = request.project_name
-        if rel_path.startswith(project_path + "/"):
-            rel_path = rel_path[len(project_path) + 1:]
-            
-        repo_local_path = os.path.join(local_base, rel_path)
+        repo_local_path = self.gitlab_manager.resolve_local_repo_path(request.project_name, local_base)
         
         try:
             orchestrator = ChangelogOrchestrator(config=self.config)
@@ -277,17 +271,12 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
     def GitBackfillChangelog(self, request, context):
         config = self.config
         local_base = config['external_services']['gitlab']['local_clone_path']
-        project_path = config['external_services']['gitlab']['project_path']
-        
-        rel_path = request.project_name
-        if rel_path.startswith(project_path + "/"):
-            rel_path = rel_path[len(project_path) + 1:]
-            
-        repo_local_path = os.path.join(local_base, rel_path)
         
         if not self.gitlab_manager:
             yield hau_pb2.GitBackfillResponse(success=False, message="GitlabManager is not initialized.", changelog_yaml="")
             return
+            
+        repo_local_path = self.gitlab_manager.resolve_local_repo_path(request.project_name, local_base)
             
         checkout_res = self.gitlab_manager.checkout_project_branch(request.project_name, request.branch_name)
         if "Failed" in checkout_res:
@@ -416,51 +405,17 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             return hau_pb2.GitInventorySyncResponse(success=False, message="GitLab configuration is missing.")
             
         try:
-            audit_mapping = {'tags': {}, 'branches': {}}
-            with self._get_db_session(write=False) as session:
-                if session:
-                    reader = SQLReader(session)
-                    logs = reader.get_all_git_releases_ordered()
-                    for log in logs:
-                        if log.action == 'DELETE':
-                            continue
-                        if log.project_name:
-                            if log.project_name not in audit_mapping['tags']:
-                                audit_mapping['tags'][log.project_name] = {}
-                            if log.project_name not in audit_mapping['branches']:
-                                audit_mapping['branches'][log.project_name] = {}
-                            
-                            if log.version_tag and log.version_tag not in audit_mapping['tags'][log.project_name]:
-                                audit_mapping['tags'][log.project_name][log.version_tag] = log.source_branch
-                            if log.target_branch and log.target_branch not in audit_mapping['branches'][log.project_name]:
-                                audit_mapping['branches'][log.project_name][log.target_branch] = log.actor
-                            if log.source_branch and log.source_branch not in audit_mapping['branches'][log.project_name]:
-                                audit_mapping['branches'][log.project_name][log.source_branch] = log.actor
-
-                    project_name = request.project_name if request.project_name else None
-                    if project_name:
-                        from core.database.models import GitProject
-                        proj_in_db = session.query(GitProject).filter(
-                            (GitProject.project_name == project_name) | 
-                            (GitProject.project_path == project_name) |
-                            (GitProject.project_path.like(f"%/{project_name}"))
-                        ).first()
-                        if proj_in_db:
-                            project_name = proj_in_db.project_path
-            result_json = inventory_manager.fetch_git_inventory_graphql(group_path="ai/halo", project_path=project_name, audit_mapping=audit_mapping)
-            data = json.loads(result_json)
-            
             with self._get_db_session(write=True) as session:
                 if not session:
                     return hau_pb2.GitInventorySyncResponse(success=False, message="Database not available.")
+                reader = SQLReader(session)
                 writer = SQLWriter(session)
-                writer.upsert_git_inventory(data)
+                inventory_manager.sync_database_inventory(reader, writer, request.project_name)
                 
             return hau_pb2.GitInventorySyncResponse(success=True, message="Successfully synced Git Inventory to DB.")
         except Exception as e:
             logger.error(f"[GitInventorySync] Failed: {e}")
             return hau_pb2.GitInventorySyncResponse(success=False, message=str(e))
-
 
     @handle_rpc(hau_pb2.GitInventoryResponse)
     def GitInventory(self, request, context):
@@ -522,60 +477,19 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
     def GetHaloDocumentationTree(self, request, context):
         try:
             cache_dir = os.path.join(self.config.get("paths", {}).get("git_cache_dir", "/ai/utilities/halo_admin_utility/cache"), "halo", "deployment", "docs")
-            docs_list = []
             
-            if os.path.exists(cache_dir):
-                for root, _, files in os.walk(cache_dir):
-                    for file in files:
-                        if file.endswith('.md'):
-                            full_path = os.path.join(root, file)
-                            rel_path = os.path.relpath(full_path, cache_dir)
-                            project_name = rel_path.split(os.sep)[0] if os.sep in rel_path else "unknown"
-                            with open(full_path, 'r', encoding='utf-8') as f:
-                                content = f.read()
-                            
-                            # Parse frontmatter
-                            metadata = {
-                                "doc_type": "Unknown",
-                                "category": "Unknown",
-                                "name": file,
-                                "acronym": "",
-                                "version": "",
-                                "author": "",
-                                "status": "",
-                                "date": ""
-                            }
-                            
-                            for line in content.split('\n')[:30]:
-                                match = re.match(r'\*\*([A-Za-z_]+):\*\*\s*(.*)', line)
-                                if match:
-                                    key, value = match.groups()
-                                    key_lower = key.lower()
-                                    if key_lower in metadata:
-                                        metadata[key_lower] = value.strip()
-                            
-                            doc_msg = hau_pb2.HaloDocument(
-                                filename=file,
-                                raw_markdown=content,
-                                doc_type=metadata["doc_type"],
-                                category=metadata["category"],
-                                name=metadata["name"],
-                                acronym=metadata["acronym"],
-                                version=metadata["version"],
-                                author=metadata["author"],
-                                status=metadata["status"],
-                                date=metadata["date"],
-                                relative_path=rel_path,
-                                project_name=project_name
-                            )
-                            docs_list.append(doc_msg)
-            else:
-                logger.warning(f"Halo docs cache dir not found at {cache_dir}")
+            docs_list = []
+            if self.gitlab_manager:
+                docs_list = self.gitlab_manager.parse_local_documentation_tree(cache_dir)
+            
+            import hau_pb2
+            doc_msgs = []
+            for doc in docs_list:
+                doc_msgs.append(hau_pb2.HaloDocument(**doc))
 
-            # Fire and forget cache sync
             threading.Thread(target=self._sync_halo_cache).start()
             
-            return hau_pb2.GetHaloDocumentationTreeResponse(success=True, message="Fetched halo docs tree", documents=docs_list)
+            return hau_pb2.GetHaloDocumentationTreeResponse(success=True, message="Fetched halo docs tree", documents=doc_msgs)
         except Exception as e:
             logger.error(f"Failed to fetch halo documentation tree: {e}")
             return hau_pb2.GetHaloDocumentationTreeResponse(success=False, message=str(e))
@@ -591,134 +505,20 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         branch_name = getattr(request, 'branch_name', None)
         container_tag = getattr(request, 'container_tag', None)
         
-        if branch_name and not container_tag:
-            container_tag = branch_name.replace('/', '-')
-        
-        if not branch_name and not container_tag:
-            return hau_pb2.GitDeleteResponse(success=False, message="Must specify either branch_name or container_tag to delete.")
-            
-        with self._get_db_session(write=True) as session:
-            if not session:
-                return hau_pb2.GitDeleteResponse(success=False, message="Database not available.")
-            sql_writer = SQLWriter(session)
-            
-            logger.info("Syncing inventory before deletion checks...")
-            orchestrator = InventoryOrchestrator(self.config, sql_writer, vault_client=self.vault_client)
-            orchestrator.sync_inventory()
-            
-            from core.database.models import GitProject
-            projects = session.query(GitProject).filter(
-                (GitProject.project_path == project_name) | 
-                (GitProject.project_path.like(f"%/{project_name}")) |
-                (GitProject.project_name == project_name)
-            ).all()
-            
-            if not projects:
-                return hau_pb2.GitDeleteResponse(success=False, message=f"Project '{project_name}' not found in local inventory.")
-                
-            if len(projects) > 1:
-                matched_paths = [p.project_path for p in projects]
-                return hau_pb2.GitDeleteResponse(
-                    success=False, 
-                    message=f"Ambiguous project name '{project_name}'. Matched {len(projects)} projects: {', '.join(matched_paths)}. Please provide the full project path."
-                )
-                
-            full_project_path = projects[0].project_path
-            project_id = projects[0].id
-            
-            if branch_name:
-                from core.database.models import GitBranch
-                branch_in_db = session.query(GitBranch).filter_by(project_id=project_id, name=branch_name).first()
-                if not branch_in_db and '-' in branch_name:
-                    alt_name = branch_name.replace('-', '/', 1)
-                    alt_branch = session.query(GitBranch).filter_by(project_id=project_id, name=alt_name).first()
-                    if alt_branch:
-                        branch_name = alt_name
-            
-            if container_tag:
-                sql_reader = SQLReader(session)
-                active_counts = sql_reader.get_active_deployments_counts()
-                short_container_name = full_project_path.split('/')[-1]
-                short_image = f"{short_container_name}:{container_tag}"
-                
-                deploy_info = active_counts.get(short_image, {})
-                if deploy_info.get('count', 0) > 0:
-                    ns = ", ".join(deploy_info.get('namespaces', []))
-                    msg = f"SAFETY ABORT: Container '{short_image}' is actively deployed in namespaces: {ns}."
-                    
-                    actor_name = getattr(request, 'author', None)
-                    if not actor_name or actor_name == "Unknown":
-                        actor_name = extract_client_id(context)
-                        
-                    log = sql_writer.create_git_release_audit_log(
-                        project_name=full_project_path,
-                        action="DELETE",
-                        actor=actor_name,
-                        status="FAILED",
-                        source_branch=branch_name,
-                        target_branch=None,
-                        merge_request_id=None,
-                        version_tag=container_tag
-                    )
-                    log.error_message = msg
-                    session.commit()
-                    return hau_pb2.GitDeleteResponse(success=False, message=msg)
-                
-                logger.info(f"Verified container '{short_image}' is not actively deployed. Proceeding with deletion.")
-                    
-        messages = []
-        overall_success = True
-        
-        if container_tag:
-            messages.append(f"Safety Check: Verified container '{short_image}' is inactive.")
-        
-        if branch_name:
-            success, msg = self.gitlab_manager.delete_branch(full_project_path, branch_name)
-            messages.append(f"Branch: {msg}")
-            if not success:
-                overall_success = False
-                
-        if container_tag:
-            success, msg = registry_manager.delete_container_tag(full_project_path, container_tag)
-            messages.append(f"Container: {msg}")
-            if not success:
-                overall_success = False
-                
-        final_msg = "\n".join(messages)
-        
-        # Determine the correct author from the request or fallback
         actor_name = getattr(request, 'author', None)
         if not actor_name or actor_name == "Unknown":
             actor_name = extract_client_id(context)
             
         with self._get_db_session(write=True) as session:
+            if not session:
+                return hau_pb2.GitDeleteResponse(success=False, message="Database not available.")
             sql_writer = SQLWriter(session)
-            log = sql_writer.create_git_release_audit_log(
-                project_name=full_project_path,
-                action="DELETE",
-                actor=actor_name,
-                status="SUCCESS" if overall_success else "FAILED",
-                source_branch=branch_name,
-                target_branch=None,
-                merge_request_id=None,
-                version_tag=container_tag
-            )
-            if not overall_success:
-                log.error_message = final_msg
-            session.commit()
+            sql_reader = SQLReader(session)
             
-        if overall_success:
-            try:
-                logger.info("Triggering post-delete Git Inventory Sync...")
-                sync_req = hau_pb2.GitInventorySyncRequest(project_name=request.project_name)
-                sync_resp = self.GitInventorySync(sync_req, context)
-                if sync_resp.success:
-                    final_msg += "\nInventory: Successfully synced post-deletion."
-                else:
-                    final_msg += f"\nInventory Sync Warning: {sync_resp.message}"
-            except Exception as e:
-                logger.error(f"Failed to trigger post-delete inventory sync: {e}")
-        return hau_pb2.GitDeleteResponse(success=overall_success, message=final_msg)
+            orchestrator = DeleteOrchestrator(self.config, self.gitlab_manager, registry_manager, self.vault_client)
+            success, message = orchestrator.run_delete(project_name, branch_name, container_tag, actor_name, sql_reader, sql_writer)
+            
+            return hau_pb2.GitDeleteResponse(success=success, message=message)
 
     @handle_rpc(hau_pb2.ListFeaturesResponse)
     def ListFeatures(self, request, context):

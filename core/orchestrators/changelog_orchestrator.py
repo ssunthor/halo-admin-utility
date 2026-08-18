@@ -26,6 +26,17 @@ class ChangelogOrchestrator:
             
         auth_config = self.config.get('auth')
         self.client = vLLMClient(config=llm_config, auth_cfg=auth_config)
+
+    def _format_author(self, raw_author: str) -> str:
+        if raw_author == "Gemini Agent":
+            return "Scott Chrestman"
+        if raw_author == "gia-ai":
+            return "Martin Kecka"
+        if raw_author.endswith(" ADM"):
+            return raw_author[:-4]
+        if raw_author.endswith(" PRV"):
+            return raw_author[:-4]
+        return raw_author
         
     def _generate_changelog(self, raw_commits: str) -> str:
         system_prompt = CHANGELOG_PROMPT.format(raw_commits=raw_commits)
@@ -43,7 +54,6 @@ class ChangelogOrchestrator:
         if content.endswith("```"): content = content[:-3]
         
         content = content.strip()
-        # Fix common YAML syntax error where LLM escapes single quotes with a backslash
         content = content.replace("\\'", "''")
         
         return content
@@ -72,7 +82,6 @@ class ChangelogOrchestrator:
         if content.endswith("```"): content = content[:-3]
         
         content = content.strip()
-        # Fix common YAML syntax error where LLM escapes single quotes with a backslash
         content = content.replace("\\'", "''")
         
         return content
@@ -84,7 +93,7 @@ class ChangelogOrchestrator:
         Yields progress strings and finally a dict with {"final_yaml": ...}
         """
         diff_res = subprocess.run(
-            ['git', 'diff', start_commit, end_commit, '--', '.', ':(exclude)package-lock.json', ':(exclude)yarn.lock', ':(exclude)pnpm-lock.yaml', ':(exclude)*changelog.yaml', ':(exclude)*CHANGELOG.yaml'],
+            ['git', 'diff', start_commit, end_commit, '--', '.', ':(exclude)package-lock.json', ':(exclude)yarn.lock', ':(exclude)pnpm-lock.yaml', ':(exclude)*changelog.yaml', ':(exclude)*CHANGELOG.yaml', ':(exclude)*.md'],
             cwd=repo_local_path, capture_output=True, text=True
         )
         
@@ -139,9 +148,9 @@ class ChangelogOrchestrator:
                     files = [f for f in files_res.stdout.strip().split('\n') if f]
                     
                     for file in files:
-                        if file.endswith('package-lock.json') or file.endswith('yarn.lock') or file.endswith('pnpm-lock.yaml') or 'changelog.yaml' in file.lower():
-                            logger.info(f"    -> Skipping lockfile/changelog: {file}")
-                            yield f"    -> Skipping lockfile/changelog: {file}"
+                        if file.endswith('package-lock.json') or file.endswith('yarn.lock') or file.endswith('pnpm-lock.yaml') or 'changelog.yaml' in file.lower() or file.endswith('.md'):
+                            logger.info(f"    -> Skipping lockfile/changelog/docs: {file}")
+                            yield f"    -> Skipping lockfile/changelog/docs: {file}"
                             continue
                             
                         file_diff_res = subprocess.run(
@@ -208,14 +217,8 @@ class ChangelogOrchestrator:
         for line in lines:
             parts = line.split('|')
             if len(parts) != 3: continue
-            date_str, commit_hash, author = parts
-            
-            if author == "Gemini Agent":
-                author = "Scott Chrestman"
-            if author.endswith(" ADM"):
-                author = author[:-4]
-            elif author.endswith(" PRV"):
-                author = author[:-4]
+            date_str, commit_hash, raw_author = parts
+            author = self._format_author(raw_author)
                 
             if date_str not in days:
                 days[date_str] = {'commits': [], 'author': author}
@@ -286,7 +289,10 @@ class ChangelogOrchestrator:
                     lines_out = final_yaml.strip().split('\n')
                     formatted_yaml = f"- {lines_out[0]}\n"
                     for line_out in lines_out[1:]:
-                        formatted_yaml += f"  {line_out}\n"
+                        if line_out.strip():
+                            formatted_yaml += f"  {line_out}\n"
+                        else:
+                            formatted_yaml += "\n"
                     
                     changelog_entries.append(formatted_yaml)
                     yield "Changelog generated successfully."
@@ -315,7 +321,6 @@ class ChangelogOrchestrator:
         yield {"final_yaml": final_doc}
 
     def generate_from_branch(self, repo_local_path: str, branch_name: str, project_name: str) -> str:
-        """Extracts git metadata and orchestrates the changelog generation for the current HEAD."""
         date_res = subprocess.run(
             ['git', 'log', '-1', '--format=%ad', '--date=short', 'HEAD'], 
             cwd=repo_local_path, capture_output=True, text=True
@@ -326,14 +331,8 @@ class ChangelogOrchestrator:
             ['git', 'log', '-1', '--format=%an', 'HEAD'], 
             cwd=repo_local_path, capture_output=True, text=True
         )
-        merge_author = author_res.stdout.strip() if author_res.returncode == 0 else "UNKNOWN"
-        
-        if merge_author == "Gemini Agent":
-            merge_author = "Scott Chrestman"
-        if merge_author.endswith(" ADM"):
-            merge_author = merge_author[:-4]
-        elif merge_author.endswith(" PRV"):
-            merge_author = merge_author[:-4]
+        raw_author = author_res.stdout.strip() if author_res.returncode == 0 else "UNKNOWN"
+        merge_author = self._format_author(raw_author)
 
         generator = self.generate_for_commits(
             repo_local_path=repo_local_path,

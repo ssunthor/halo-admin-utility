@@ -18,6 +18,7 @@ import yaml
 import halo_admin_utility
 from core.managers.kube_manager import KubeManager
 from kubernetes.client import NetworkingV1Api
+from core.clients.vault_client import VaultClient
 
 config = halo_admin_utility.load_config()
 rancher_clusters = config.get('rancher_clusters', {})
@@ -82,7 +83,8 @@ def dump_cluster_namespaces(km, cluster_alias):
 
 # App Cluster dump
 app_cluster = slo_conf.get('halo_cluster_name')
-km_app = KubeManager(slo_conf, app_cluster)
+vault_client = VaultClient(config['external_services']['vault'])
+km_app = KubeManager(slo_conf, app_cluster, vault_client=vault_client, config_ref=config)
 dump_cluster_namespaces(km_app, "app")
 
 tenant_prefixes = {
@@ -105,7 +107,7 @@ def get_gpu_tenant(name):
 gpu_cluster = slo_conf.get('gpu_cluster_name')
 print(f"Fetching namespaces for cluster gpu...")
 try:
-    km_gpu = KubeManager(slo_conf, gpu_cluster)
+    km_gpu = KubeManager(slo_conf, gpu_cluster, vault_client=vault_client, config_ref=config)
     deps = km_gpu.apps_v1.list_namespaced_deployment("halo")
     for d in deps.items:
         t_ns = get_gpu_tenant(d.metadata.name)

@@ -3,6 +3,7 @@ import logging
 import subprocess
 import yaml
 import re
+import copy
 from packaging.version import parse as parse_version
 from typing import Dict, Any, Generator
 from datetime import datetime
@@ -15,6 +16,7 @@ from core.io_handlers.sql_reader import SQLReader
 from core.io_handlers.sql_writer import SQLWriter
 from core.managers.git_pipeline_manager import GitPipelineManager
 from core.managers.container_registry_manager import ContainerRegistryManager
+from core.managers.git_inventory_manager import GitInventoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ class ReleaseOrchestrator:
         self.gitlab_manager = gitlab_manager
         self.pipeline_manager = GitPipelineManager(config)
         self.registry_manager = ContainerRegistryManager(config)
+        self.inventory_manager = GitInventoryManager(config)
         db_config = self.config.get('database', {})
         dsn = db_config.get('write_dsn')
         self.Session = None
@@ -64,6 +67,7 @@ class ReleaseOrchestrator:
                 sql_reader = SQLReader(session)
                 sql_writer = SQLWriter(session)
                 
+                project_name = sql_reader.resolve_project_path(project_name)
                 active_lock = sql_reader.get_active_git_release_audit_log(project_name)
                 
                 if active_lock:
@@ -86,12 +90,15 @@ class ReleaseOrchestrator:
                     session.rollback()
 
         try:
+            trace_logs = []
             for item in self._run_release_internal(project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, sql_reader, sql_writer, dry_run):
+                trace_logs.append(item)
                 if isinstance(item, dict) and not item.get("success", True):
                     if audit_log and sql_writer:
                         sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message=item.get("message", "Unknown error occurred."))
                 yield item
         except Exception as e:
+            trace_logs.append({"success": False, "message": f"Unhandled Exception: {str(e)}", "stage": "ERROR"})
             if audit_log and sql_writer:
                 sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message=f"Unhandled Exception: {str(e)}")
             logger.error(f"[GitRelease] Unhandled Exception: {e}", exc_info=True)
@@ -101,6 +108,14 @@ class ReleaseOrchestrator:
                 try:
                     if audit_log.status == "RUNNING":
                         sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message="Orchestration aborted unexpectedly or connection dropped.")
+                    
+                    if sql_writer and sql_reader:
+                        fresh_log = sql_reader.get_git_release_audit_log_by_id(audit_log.id)
+                        if fresh_log:
+                            current_details = copy.deepcopy(fresh_log.job_details_json or {})
+                            current_details['trace_logs'] = trace_logs
+                            sql_writer.update_git_release_audit_log(audit_log.id, job_details_json=current_details)
+                    
                     session.close()
                 except Exception:
                     pass
@@ -111,30 +126,14 @@ class ReleaseOrchestrator:
         
         yield "Syncing Git Inventory to ensure latest state before release..."
         try:
-            from core.managers.git_inventory_manager import GitInventoryManager
-            inv_manager = GitInventoryManager(self.config)
-            audit_mapping = {}
-            if sql_reader:
-                logs = sql_reader.get_successful_git_releases()
-                for log in logs:
-                    if log.version_tag and log.project_name:
-                        if log.project_name not in audit_mapping:
-                            audit_mapping[log.project_name] = {}
-                        audit_mapping[log.project_name][log.version_tag] = log.source_branch
-            
-            result_json = inv_manager.fetch_git_inventory_graphql(project_path=project_name, audit_mapping=audit_mapping)
-            import json
-            data = json.loads(result_json)
-            if sql_writer:
-                sql_writer.upsert_git_inventory(data)
-                yield "✅ Git Inventory successfully synced."
+            self.inventory_manager.sync_database_inventory(sql_reader, sql_writer, project_name)
+            yield "✅ Git Inventory successfully synced."
         except Exception as e:
             logger.error(f"[GitRelease] Pre-release inventory sync failed: {e}")
             yield f"⚠️ Warning: Pre-release inventory sync failed: {e}"
         
         if sql_reader:
             previous_release = sql_reader.get_previous_successful_release(project_name, source_branch, target_branch, "GIT_RELEASE")
-            
             if previous_release:
                 yield f"⚠️ WARNING: A successful release for '{source_branch}' -> '{target_branch}' was already recorded on {previous_release.timestamp.strftime('%Y-%m-%d %H:%M:%S')}. Proceeding anyway in case of new commits..."
 
@@ -184,7 +183,6 @@ class ReleaseOrchestrator:
         target_version = "0.0.0"
         source_version = "0.0.0"
         top_entry_source = {}
-        
         missing_changelog = True
         
         try:
@@ -241,11 +239,7 @@ class ReleaseOrchestrator:
                 self.gitlab_manager.checkout_project_branch(project_name, source_branch)
                 
                 local_base = self.config['external_services']['gitlab']['local_clone_path']
-                rel_path = project_name
-                project_path_cfg = self.config['external_services']['gitlab']['project_path']
-                if rel_path.startswith(project_path_cfg + "/"):
-                    rel_path = rel_path[len(project_path_cfg) + 1:]
-                repo_local_path = os.path.join(local_base, rel_path)
+                repo_local_path = self.gitlab_manager.resolve_local_repo_path(project_name, local_base)
                 
                 if author:
                     try:
@@ -563,7 +557,7 @@ class ReleaseOrchestrator:
             if not merged:
                 yield f"❌ ❌ MR failed to merge. State: {mr.state}, Status: {mr.merge_status}. Aborting release."
                 yield f"\nTo retry this release once the issue is fixed, run:"
-                yield f"  python3 halo_admin_utility.py git retry --repo {project_name} --merge {mr.iid}"
+                yield f"  python3 halo_admin_utility.py git retry --project {project_name} --merge {mr.iid}"
                 err_msg = f"MR failed to merge. State: {mr.state}, Status: {mr.detailed_merge_status}. Aborting release."
                 logger.error(f"[GitRelease] {err_msg}")
                 yield {"success": False, "message": err_msg}
@@ -625,20 +619,7 @@ class ReleaseOrchestrator:
             yield f"[DRY-RUN] Would synchronize targeted Git inventory for '{project_name}' to DB."
         else:
             try:
-                from core.managers.git_inventory_manager import GitInventoryManager
-                inv_manager = GitInventoryManager(self.config)
-                audit_mapping = {}
-                logs = sql_reader.get_successful_git_releases()
-                for log in logs:
-                    if log.version_tag and log.project_name:
-                        if log.project_name not in audit_mapping:
-                            audit_mapping[log.project_name] = {}
-                        audit_mapping[log.project_name][log.version_tag] = log.source_branch
-                
-                result_json = inv_manager.fetch_git_inventory_graphql(project_path=project_name, audit_mapping=audit_mapping)
-                import json
-                data = json.loads(result_json)
-                sql_writer.upsert_git_inventory(data)
+                self.inventory_manager.sync_database_inventory(sql_reader, sql_writer, project_name)
                 yield "✅ Git Inventory successfully synced."
             except Exception as e:
                 logger.error(f"[GitRelease] Failed to sync inventory: {e}")
@@ -661,6 +642,7 @@ class ReleaseOrchestrator:
                 sql_reader = SQLReader(session)
                 sql_writer = SQLWriter(session)
                 
+                project_name = sql_reader.resolve_project_path(project_name)
                 active_lock = sql_reader.get_active_git_release_audit_log(project_name)
                 
                 if active_lock:
@@ -669,11 +651,18 @@ class ReleaseOrchestrator:
                     session.close()
                     return
                     
+                version_tag = None
+                if merge_id:
+                    prev_log = sql_reader.get_latest_audit_log_by_mr(project_name, str(merge_id))
+                    if prev_log:
+                        version_tag = prev_log.version_tag
+                        
                 audit_log = sql_writer.create_git_release_audit_log(
                     project_name=project_name,
                     action="GIT_RETRY",
                     actor=author or "gia-ai",
-                    status="RUNNING"
+                    status="RUNNING",
+                    version_tag=version_tag
                 )
             except Exception as e:
                 logger.error(f"[GitRetry] Failed to acquire DB lock: {e}")
@@ -681,12 +670,15 @@ class ReleaseOrchestrator:
                     session.rollback()
 
         try:
+            trace_logs = []
             for item in self._run_retry_internal(project_name, pipeline_id, merge_id, skip_warnings, debug, audit_log, sql_reader, sql_writer, author):
+                trace_logs.append(item)
                 if isinstance(item, dict) and not item.get("success", True):
                     if audit_log and sql_writer:
                         sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message=item.get("message", "Unknown error occurred."))
                 yield item
         except Exception as e:
+            trace_logs.append({"success": False, "message": f"Unhandled Exception: {str(e)}", "stage": "ERROR"})
             if audit_log and sql_writer:
                 sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message=f"Unhandled Exception: {str(e)}")
             logger.error(f"[GitRetry] Unhandled Exception: {e}", exc_info=True)
@@ -696,6 +688,14 @@ class ReleaseOrchestrator:
                 try:
                     if audit_log.status == "RUNNING":
                         sql_writer.update_git_release_audit_log(audit_log.id, status="FAILED", error_message="Orchestration aborted unexpectedly or connection dropped.")
+                    
+                    if sql_writer and sql_reader:
+                        fresh_log = sql_reader.get_git_release_audit_log_by_id(audit_log.id)
+                        if fresh_log:
+                            current_details = copy.deepcopy(fresh_log.job_details_json or {})
+                            current_details['trace_logs'] = trace_logs
+                            sql_writer.update_git_release_audit_log(audit_log.id, job_details_json=current_details)
+                    
                     session.close()
                 except Exception:
                     pass
@@ -929,20 +929,7 @@ class ReleaseOrchestrator:
 
         yield "Syncing updated Git Inventory to database..."
         try:
-            from core.managers.git_inventory_manager import GitInventoryManager
-            inv_manager = GitInventoryManager(self.config)
-            audit_mapping = {}
-            logs = sql_reader.get_successful_git_releases()
-            for log in logs:
-                if log.version_tag and log.project_name:
-                    if log.project_name not in audit_mapping:
-                        audit_mapping[log.project_name] = {}
-                    audit_mapping[log.project_name][log.version_tag] = log.source_branch
-            
-            result_json = inv_manager.fetch_git_inventory_graphql(project_path=project_name, audit_mapping=audit_mapping)
-            import json
-            data = json.loads(result_json)
-            sql_writer.upsert_git_inventory(data)
+            self.inventory_manager.sync_database_inventory(sql_reader, sql_writer, project_name)
             yield "✅ Git Inventory successfully synced."
         except Exception as e:
             logger.error(f"[GitRetry] Failed to sync inventory: {e}")

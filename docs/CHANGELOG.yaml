@@ -15,6 +15,32 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: '0.1.7'
+  date: '2026-08-18'
+  author: 'Martin Kecka'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Strictly enforced the Repository pattern by moving all raw SQLAlchemy queries out of hau_service.py and Orchestrators into centralized SQLReader and SQLWriter handlers. [NEEDS_DOCS]'
+        - 'Decoupled GitOps deletion logic from the gRPC servicer into a dedicated DeleteOrchestrator to handle container deployment safety checks.'
+        - 'Extracted Markdown frontmatter parsing and local repository path resolution from hau_service.py into GitlabManager to eliminate traffic cop bloat.'
+        - 'Decoupled Git Inventory database synchronization logic from the gRPC layer into GitInventoryManager.'
+        - 'Expanded HaloTenant database schema to include netbox_id, tenant_acronym, tenant_name, and tenant_group for better tenant metadata tracking.'
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented KubeManager.apply_manifest to programmatically apply Kubernetes manifests, supporting Deployments, Services, ConfigMaps, Ingress, and PVCs.'
+        - 'Introduced orchestration trace logging in ReleaseOrchestrator, allowing detailed execution logs to be persisted in the database and viewed via the CLI.'
+        - 'Enhanced git audit CLI output to display allowed-to-fail status for jobs and a dedicated section for Orchestration Trace Logs.'
+        - 'Added automatic Archive document categorization in the gRPC service based on file path patterns.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Improved GIT_RETRY logic to automatically recover and associate the version_tag from previous release audit logs.'
+        - 'Added case-insensitivity to tenant_slug in Netbox audit CLI commands to prevent lookup failures.'
+    - category: '🧹 Refactoring & Chores'
+      items:
+        - 'Resolved DRY violations by standardizing ambiguous project name normalization logic directly into SQLReader.'
+        - 'Standardized LLM author mapping and formatting logic across ChangelogOrchestrator workflows to prevent code duplication.'
+
 - version: 0.1.6
   date: "2026-08-14"
   author: "Martin Kecka"

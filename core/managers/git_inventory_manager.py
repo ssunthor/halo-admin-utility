@@ -4,6 +4,8 @@ import concurrent.futures
 import gitlab
 import logging
 import urllib3
+from core.io_handlers.sql_reader import SQLReader
+from core.io_handlers.sql_writer import SQLWriter
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -18,6 +20,31 @@ class GitInventoryManager:
         else:
             self.url = None
             self.token = None
+
+    def sync_database_inventory(self, sql_reader: SQLReader, sql_writer: SQLWriter, project_name: str = None) -> str:
+        audit_mapping = {'tags': {}, 'branches': {}}
+        logs = sql_reader.get_all_git_releases_ordered()
+        for log in logs:
+            if log.action == 'DELETE':
+                continue
+            if log.project_name:
+                if log.project_name not in audit_mapping['tags']:
+                    audit_mapping['tags'][log.project_name] = {}
+                if log.project_name not in audit_mapping['branches']:
+                    audit_mapping['branches'][log.project_name] = {}
+                
+                if log.version_tag and log.version_tag not in audit_mapping['tags'][log.project_name]:
+                    audit_mapping['tags'][log.project_name][log.version_tag] = log.source_branch
+                if log.target_branch and log.target_branch not in audit_mapping['branches'][log.project_name]:
+                    audit_mapping['branches'][log.project_name][log.target_branch] = log.actor
+                if log.source_branch and log.source_branch not in audit_mapping['branches'][log.project_name]:
+                    audit_mapping['branches'][log.project_name][log.source_branch] = log.actor
+
+        resolved_project_name = sql_reader.resolve_project_path(project_name) if project_name else None
+        result_json = self.fetch_git_inventory_graphql(project_path=resolved_project_name, audit_mapping=audit_mapping)
+        data = json.loads(result_json)
+        sql_writer.upsert_git_inventory(data)
+        return "Successfully synced Git Inventory to DB."
 
     def fetch_git_inventory_graphql(self, group_path="ai/halo", project_path=None, audit_mapping=None):
         if not self.url or not self.token:

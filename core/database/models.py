@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Boolean, Enum as SQLEnum, JSON
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Boolean, Enum as SQLEnum, JSON
 from sqlalchemy.orm import declarative_base, relationship
 import uuid
 from datetime import datetime
@@ -34,6 +34,10 @@ class HaloTenant(Base):
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
     cmd_tenant_id = Column(String(255), nullable=True)
+    netbox_id = Column(Integer, nullable=True)
+    tenant_acronym = Column(String(50), nullable=False, unique=True)
+    tenant_name = Column(String(255), nullable=False)
+    tenant_group = Column(String(255), nullable=True)
     slug_name = Column(String(255), nullable=False, unique=True)
     target_cluster = Column(String(50), nullable=False)
     halo_version = Column(String(50), nullable=True)

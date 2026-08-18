@@ -265,7 +265,80 @@ class KubeManager:
             
         raise RuntimeError(f"Deployment {deployment_name} failed to rollout within {timeout_seconds} seconds.")
 
-
+    def apply_manifest(self, raw_yaml_string, namespace='default'):
+        docs = yaml.safe_load_all(raw_yaml_string)
+        results = []
+        for doc in docs:
+            if not doc:
+                continue
+            kind = doc.get('kind')
+            name = doc['metadata']['name']
+            ns = doc['metadata'].get('namespace', namespace)
+            
+            logger.info(f"Applying {kind} {name} to namespace {ns}")
+            try:
+                if kind == 'Deployment':
+                    try:
+                        live_dep = self.apps_v1.read_namespaced_deployment(name, ns)
+                        doc['metadata']['resourceVersion'] = live_dep.metadata.resource_version
+                        self.apps_v1.replace_namespaced_deployment(name, ns, doc)
+                        results.append(f"Patched Deployment {name}")
+                    except ApiException as e:
+                        if e.status == 404:
+                            self.apps_v1.create_namespaced_deployment(ns, doc)
+                            results.append(f"Created Deployment {name}")
+                        else:
+                            raise
+                elif kind == 'Service':
+                    try:
+                        self.core_v1.read_namespaced_service(name, ns)
+                        self.core_v1.patch_namespaced_service(name, ns, doc)
+                        results.append(f"Patched Service {name}")
+                    except ApiException as e:
+                        if e.status == 404:
+                            self.core_v1.create_namespaced_service(ns, doc)
+                            results.append(f"Created Service {name}")
+                        else:
+                            raise
+                elif kind == 'ConfigMap':
+                    try:
+                        self.core_v1.read_namespaced_config_map(name, ns)
+                        self.core_v1.patch_namespaced_config_map(name, ns, doc)
+                        results.append(f"Patched ConfigMap {name}")
+                    except ApiException as e:
+                        if e.status == 404:
+                            self.core_v1.create_namespaced_config_map(ns, doc)
+                            results.append(f"Created ConfigMap {name}")
+                        else:
+                            raise
+                elif kind == 'Ingress':
+                    net_v1 = client.NetworkingV1Api(self.api_client)
+                    try:
+                        net_v1.read_namespaced_ingress(name, ns)
+                        net_v1.patch_namespaced_ingress(name, ns, doc)
+                        results.append(f"Patched Ingress {name}")
+                    except ApiException as e:
+                        if e.status == 404:
+                            net_v1.create_namespaced_ingress(ns, doc)
+                            results.append(f"Created Ingress {name}")
+                        else:
+                            raise
+                elif kind == 'PersistentVolumeClaim':
+                    try:
+                        self.core_v1.read_namespaced_persistent_volume_claim(name, ns)
+                        results.append(f"PVC {name} already exists. Skipping patch.")
+                    except ApiException as e:
+                        if e.status == 404:
+                            self.core_v1.create_namespaced_persistent_volume_claim(ns, doc)
+                            results.append(f"Created PVC {name}")
+                        else:
+                            raise
+                else:
+                    results.append(f"Unsupported kind {kind} for {name}. Ignored.")
+            except Exception as e:
+                raise RuntimeError(f"Failed to apply {kind} {name}: {str(e)}")
+                
+        return results
 
     def _find_drift(self, desired, live, path=""):
         drifts = []
@@ -336,12 +409,6 @@ class KubeManager:
                 elif kind == 'Ingress':
                     net_v1 = client.NetworkingV1Api(self.api_client)
                     live_obj = net_v1.read_namespaced_ingress(name, ns)
-                elif kind == 'NIMService':
-                    custom_api = client.CustomObjectsApi(self.api_client)
-                    group = "apps.nvidia.com"
-                    version = "v1alpha1"
-                    plural = "nimservices"
-                    live_obj = custom_api.get_namespaced_custom_object(group, version, ns, plural, name)
                 else:
                     status['drifts'].append(f"Unsupported kind {kind} for verification.")
                     results.append(status)

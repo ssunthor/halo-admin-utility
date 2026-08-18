@@ -1,6 +1,7 @@
 import gitlab
 import base64
 import os
+import re
 import subprocess
 import logging
 import urllib3
@@ -17,19 +18,16 @@ class GitlabManager:
 
     def fetch_raw_yaml(self, project_path, file_path, branch='main'):
         token = self.token
-        
         try:
             gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
             project = gl.projects.get(project_path)
             f = project.files.get(file_path=file_path, ref=branch)
-            
             return base64.b64decode(f.content).decode('utf-8')
         except Exception as e:
             raise RuntimeError(f"Failed to fetch {file_path} via API: {e}")
 
     def fetch_repository_tree(self, project_path, path=''):
         token = self.token
-        
         try:
             import json
             gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
@@ -43,9 +41,7 @@ class GitlabManager:
     def fetch_documentation(self, project_name):
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         project_client = gl.projects.get("ai/halo/deployment")
-        
         doc_path = f"docs/{project_name}"
-        
         try:
             tree = project_client.repository_tree(path=doc_path, ref='main')
         except gitlab.exceptions.GitlabGetError as e:
@@ -61,15 +57,71 @@ class GitlabManager:
             if item['type'] == 'blob' and item['name'].endswith('.md'):
                 f = project_client.files.get(file_path=item['path'], ref='main')
                 docs[item['name']] = base64.b64decode(f.content).decode('utf-8')
-        
         return docs
+
+    def resolve_local_repo_path(self, project_name: str, local_base: str) -> str:
+        project_path_cfg = self.config.get('project_path', 'ai/halo')
+        rel_path = project_name
+        if rel_path.startswith(project_path_cfg + "/"):
+            rel_path = rel_path[len(project_path_cfg) + 1:]
+        return os.path.join(local_base, rel_path)
+
+    def parse_local_documentation_tree(self, cache_dir: str) -> list:
+        docs_list = []
+        if not os.path.exists(cache_dir):
+            return docs_list
+        for root, _, files in os.walk(cache_dir):
+            for file in files:
+                if file.endswith('.md'):
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, cache_dir)
+                    project_name = rel_path.split(os.sep)[0] if os.sep in rel_path else "unknown"
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    metadata = {
+                        "doc_type": "Unknown",
+                        "category": "Unknown",
+                        "name": file,
+                        "acronym": "",
+                        "version": "",
+                        "author": "",
+                        "status": "",
+                        "date": ""
+                    }
+                    
+                    for line in content.split('\n')[:30]:
+                        match = re.match(r'\*\*([A-Za-z_]+):\*\*\s*(.*)', line)
+                        if match:
+                            key, value = match.groups()
+                            key_lower = key.lower()
+                            if key_lower in metadata:
+                                metadata[key_lower] = value.strip()
+                                
+                    if 'archive' in rel_path.split(os.sep):
+                        metadata['doc_type'] = 'Archive'
+                        metadata['category'] = 'Archive'
+                    
+                    docs_list.append({
+                        "filename": file,
+                        "raw_markdown": content,
+                        "doc_type": metadata["doc_type"],
+                        "category": metadata["category"],
+                        "name": metadata["name"],
+                        "acronym": metadata["acronym"],
+                        "version": metadata["version"],
+                        "author": metadata["author"],
+                        "status": metadata["status"],
+                        "date": metadata["date"],
+                        "relative_path": rel_path,
+                        "project_name": project_name
+                    })
+        return docs_list
 
     def sync_local_repo(self, project_path, local_path):
         token = self.token
-        
         domain = self.url.replace('https://', '').replace('http://', '')
         repo_url = f"https://oauth2:{token}@{domain}/{project_path}.git"
-
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
         if not os.path.exists(os.path.join(local_path, '.git')):
@@ -82,7 +134,6 @@ class GitlabManager:
         else:
             logger.info(f"Pulling latest changes for {project_path} in {local_path} (shallow)...")
             subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=local_path)
-            
             result = subprocess.run(['git', 'pull', '--depth', '1', 'origin', 'main'], cwd=local_path, capture_output=True, text=True)
             if result.returncode != 0:
                 raise RuntimeError(f"Git pull failed with exit code {result.returncode}\n{result.stderr}")
@@ -93,26 +144,22 @@ class GitlabManager:
         token = self.config.get('bot_token')
         project_path = self.config.get('project_path')
         local_path = self.config.get('local_clone_path')
-        
         domain = self.url.replace('https://', '').replace('http://', '')
         
         gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
         group = gl.groups.get(project_path)
         projects = group.projects.list(include_subgroups=True, all=True)
-        
         os.makedirs(local_path, exist_ok=True)
         
         import concurrent.futures
         
         def sync_project(p):
             repo_url = f"https://oauth2:{token}@{domain}/{p.path_with_namespace}.git"
-            
             rel_path = p.path_with_namespace
             if rel_path.startswith(project_path + "/"):
                 rel_path = rel_path[len(project_path) + 1:]
                 
             repo_local_path = os.path.join(local_path, rel_path)
-            
             target_pref = branch_override if branch_override else 'dev'
             if not os.path.exists(os.path.join(repo_local_path, '.git')):
                 ls_remote = subprocess.run(['git', 'ls-remote', '--heads', repo_url, target_pref], capture_output=True, text=True)
@@ -131,8 +178,6 @@ class GitlabManager:
             else:
                 subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=repo_local_path)
                 subprocess.run(['git', 'fetch', 'origin'], cwd=repo_local_path, capture_output=True)
-                
-                # Pre-clean working directory to avoid checkout errors
                 subprocess.run(['git', 'reset', '--hard'], cwd=repo_local_path, capture_output=True)
                 subprocess.run(['git', 'clean', '-fd'], cwd=repo_local_path, capture_output=True)
                 
@@ -151,7 +196,6 @@ class GitlabManager:
                         subprocess.run(['git', 'checkout', active_branch], cwd=repo_local_path, capture_output=True)
                 
                 logger.info(f"Syncing {p.path_with_namespace} in {repo_local_path} (branch: {active_branch})...")
-                # Hard reset to remote and clean untracked files to ensure pristine cache state
                 result = subprocess.run(['git', 'reset', '--hard', f'origin/{active_branch}'], cwd=repo_local_path, capture_output=True, text=True)
                 subprocess.run(['git', 'clean', '-fd'], cwd=repo_local_path, capture_output=True)
                 
@@ -234,12 +278,7 @@ class GitlabManager:
         if not local_path:
             raise RuntimeError("local_clone_path is not defined in configuration.")
             
-        project_path = self.config.get('project_path')
-        rel_path = project_name
-        if rel_path.startswith(project_path + "/"):
-            rel_path = rel_path[len(project_path) + 1:]
-            
-        repo_dir = os.path.join(local_path, rel_path)
+        repo_dir = self.resolve_local_repo_path(project_name, local_path)
         if not os.path.exists(os.path.join(repo_dir, '.git')):
             raise RuntimeError(f"Project '{project_name}' is not cloned locally. Run sync first.")
             
@@ -338,7 +377,6 @@ class GitlabManager:
     def create_tag(self, project_path, tag_name, ref):
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         project = gl.projects.get(project_path)
-        
         try:
             tag = project.tags.create({'tag_name': tag_name, 'ref': ref})
             return True, f"Successfully created tag {tag.name} from {ref}."
@@ -348,7 +386,6 @@ class GitlabManager:
     def create_release(self, project_path, tag_name, description):
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         project = gl.projects.get(project_path)
-        
         try:
             release = project.releases.create({
                 'name': f'Release {tag_name}',

@@ -317,7 +317,7 @@ def git_checkout(ctx, project, branch, as_grpc):
 @click.option('--skip-changelog', is_flag=True, help="Skip generating changelog if missing")
 @click.option('--delete-branch', is_flag=True, help="Delete the feature branch after merging (default is to keep it)")
 @click.option('--debug', is_flag=True, help="Stream detailed job trace logs from the pipeline")
-@click.option('--author', type=str, help="Override author (will resolve to GitLab user)")
+@click.option('--author', type=str, required=True, help="Override author (will resolve to GitLab user)")
 @click.option('--dry-run', is_flag=True, help="Simulate the release process without modifying GitLab or pushing commits.")
 @click.pass_context
 def git_release(ctx, project, source, target, skip_changelog, delete_branch, debug, author, dry_run):
@@ -360,7 +360,7 @@ def git_release(ctx, project, source, target, skip_changelog, delete_branch, deb
 @click.option('--merge', type=int, help="ID of the Merge Request to retry")
 @click.option('--skip-warnings', is_flag=True, help="Skip retrying if the pipeline is already successful (ignore warnings)")
 @click.option('--debug', is_flag=True, help="Stream detailed job trace logs from the pipeline")
-@click.option('--author', type=str, help="Override author (will resolve to GitLab user)")
+@click.option('--author', type=str, required=True, help="Override author (will resolve to GitLab user)")
 @click.pass_context
 def git_retry(ctx, project, pipeline, merge, skip_warnings, debug, author):
     """Retries a failed GitLab pipeline or Merge Request and streams its progress."""
@@ -472,12 +472,24 @@ def git_audit(ctx, id, project, as_grpc):
                         j_status = j.get('status', 'unknown')
                         jc = 'green' if j_status == 'success' else 'red' if j_status == 'failed' else 'yellow'
                         dur = f"{j.get('duration', 0):.1f}s" if j.get('duration') else "N/A"
-                        click.echo(f"  - {j.get('name'):<25} | {click.style(f'{j_status:<10}', fg=jc)} | {dur:<8} | {j.get('stage')}")
+                        allow_str = click.style(" (allowed to fail)", fg='yellow') if j.get('allow_failure') and j_status == 'failed' else ""
+                        click.echo(f"  - {j.get('name'):<25} | {click.style(f'{j_status:<10}', fg=jc)} | {dur:<8} | {j.get('stage')}{allow_str}")
                         if j.get('trace'):
                             num_lines = min(len(j.get('trace', [])), 50)
                             click.secho(f"    --- Last {num_lines} lines of Trace ---", fg='red')
                             for tline in j.get('trace', [])[-50:]:
                                 click.secho(f"      {tline}", fg='red', dim=True)
+                                
+                trace_logs = jobs_details.get('trace_logs', [])
+                if trace_logs:
+                    click.secho(f"\n[Orchestration Trace Logs]:", fg='magenta', bold=True)
+                    for log in trace_logs:
+                        if isinstance(log, str):
+                            click.echo(f"  {log}")
+                        elif isinstance(log, dict):
+                            color = 'green' if log.get('success') else 'red' if log.get('success') is False else 'white'
+                            msg = f"  [{log.get('stage', 'INFO')}] {log.get('message', '')}"
+                            click.secho(msg, fg=color)
         else:
             click.secho(f"{'ID':<8} | {'Project':<35} | {'Version':<11} | {'MR':<5} | {'Action':<11} | {'Actor':<15} | {'Path (Src->Tgt)':<25} | {'Status':<10} | {'Method':<18} | {'Date'}", fg='cyan', bold=True)
             click.secho("-" * 175, fg='cyan')

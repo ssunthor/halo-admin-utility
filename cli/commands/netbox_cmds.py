@@ -19,6 +19,7 @@ def netbox_cli():
 @handle_grpc_errors
 def audit_tenant(ctx, tenant_slug, as_grpc, ip_audit):
     """Audit a Netbox tenant for missing slids and IPs."""
+    tenant_slug = tenant_slug.lower()
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
     if not stub:

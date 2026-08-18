@@ -206,6 +206,7 @@ class GitPipelineManager:
                     "stage": j.stage,
                     "status": j.status,
                     "duration": job_dur,
+                    "allow_failure": getattr(j, 'allow_failure', False),
                     "web_url": getattr(j, 'web_url', None)
                 })
             yield {"is_intermediate": True, "telemetry": current_telemetry}

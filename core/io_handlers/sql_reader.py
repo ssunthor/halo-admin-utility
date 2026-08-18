@@ -1,6 +1,7 @@
 import logging
 from sqlalchemy.orm import Session
-from core.database.models import HaloTenant, TenantResourceInventory, GitProject, GitReleaseAuditLog
+from sqlalchemy import or_
+from core.database.models import HaloTenant, TenantResourceInventory, GitProject, GitReleaseAuditLog, GitBranch
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,6 @@ class SQLReader:
         return result
 
     def get_active_deployments_counts(self):
-        import json
-        
         counts = {}
         resources = self.session.query(TenantResourceInventory).all()
         for r in resources:
@@ -185,7 +184,6 @@ class SQLReader:
                             matched_containers.add(tag)
                             break
                             
-            # Process inactive releases
             for key, action in tag_status.items():
                 if key[0] == p.project_path and action == 'DELETE':
                     tag = key[1]
@@ -276,7 +274,6 @@ class SQLReader:
         if audit_id:
             query = query.filter(GitReleaseAuditLog.id.startswith(audit_id))
         elif project_name:
-            from sqlalchemy import or_
             short_name = project_name.split('/')[-1]
             query = query.filter(or_(
                 GitReleaseAuditLog.project_name == project_name,
@@ -324,3 +321,37 @@ class SQLReader:
             status="SUCCESS",
             action=action
         ).order_by(GitReleaseAuditLog.timestamp.desc()).first()
+
+    def resolve_project_path(self, project_name: str) -> str:
+        if not project_name:
+            return project_name
+        proj = self.session.query(GitProject).filter(
+            or_(
+                GitProject.project_name == project_name,
+                GitProject.project_path == project_name,
+                GitProject.project_path.like(f"%/{project_name}")
+            )
+        ).first()
+        return proj.project_path if proj else project_name
+
+    def get_git_project_by_name(self, project_name: str):
+        return self.session.query(GitProject).filter(
+            or_(
+                GitProject.project_name == project_name,
+                GitProject.project_path == project_name,
+                GitProject.project_path.like(f"%/{project_name}")
+            )
+        ).all()
+
+    def get_git_branch(self, project_id: str, branch_name: str):
+        return self.session.query(GitBranch).filter_by(project_id=project_id, name=branch_name).first()
+
+    def get_latest_audit_log_by_mr(self, project_name: str, merge_request_id: str):
+        return self.session.query(GitReleaseAuditLog).filter_by(
+            project_name=project_name, 
+            action="GIT_RELEASE",
+            merge_request_id=merge_request_id
+        ).order_by(GitReleaseAuditLog.timestamp.desc()).first()
+        
+    def get_git_release_audit_log_by_id(self, log_id: str):
+        return self.session.query(GitReleaseAuditLog).filter_by(id=log_id).first()

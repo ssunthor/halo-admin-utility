@@ -25,6 +25,7 @@ paths:
   sera_proto_source_dir: "/ai/assets/protos/sera_standard"
   generated_stubs_path: "/ai/assets/protos/halo_admin_utility/generated"
   cmc_generated_stubs_path: "/ai/assets/protos/cmd_connector/generated"
+  cmu_generated_stubs_path: "/ai/assets/protos/configuration_management_utility/generated"
 
 database:
   write_dsn: "postgresql://ham_admin_prod_user:EUfOKcHxXpSCdQl10W5IwWGw@slo-aif-hadb.slo.gt-t.net:5432/ham_admin_prod_db"
@@ -34,6 +35,9 @@ connectors:
   cmc:
     host: "localhost"
     port: 50053
+  cmu:
+    host: "localhost"
+    port: 50105
 
 external_services:
   vault:

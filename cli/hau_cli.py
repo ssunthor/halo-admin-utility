@@ -119,6 +119,8 @@ from cli.commands.inventory_cmds import inventory_cli
 from cli.commands.changelog_cmds import changelog_cmds
 from cli.commands.features_cmds import features_cmds
 from cli.commands.netbox_cmds import netbox_cli
+from cli.commands.deploy_cmds import deploy_cli
+from cli.commands.decom_cmds import decom_cli
 
 cli.add_command(start_grpc_server)
 cli.add_command(init_db_cmd)
@@ -128,3 +130,5 @@ cli.add_command(inventory_cli)
 cli.add_command(changelog_cmds)
 cli.add_command(features_cmds)
 cli.add_command(netbox_cli)
+cli.add_command(deploy_cli)
+cli.add_command(decom_cli)

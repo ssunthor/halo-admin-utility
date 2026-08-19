@@ -618,3 +618,106 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         except Exception as e:
             logger.error(f"[NetboxAuditTenant] Failed: {e}")
             return hau_pb2.NetboxAuditTenantResponse(success=False, message=str(e))
+
+    @handle_rpc(hau_pb2.DeployTenantScaffoldResponse)
+    def DeployTenantScaffold(self, request, context):
+        try:
+            with self._get_db_session(write=True) as session:
+                if not session:
+                    yield hau_pb2.DeployTenantScaffoldResponse(success=False, message="Database not available.")
+                    return
+                
+                sql_writer = SQLWriter(session)
+                from core.orchestrators.scaffold_orchestrator import ScaffoldOrchestrator
+                orchestrator = ScaffoldOrchestrator(self.config, sql_writer)
+                
+                image_selections = dict(request.image_selections) if request.image_selections else {}
+                variables = dict(request.variables) if request.variables else {}
+                
+                for msg in orchestrator.scaffold_tenant(
+                    tenant_acronym=request.tenant_acronym,
+                    region=request.region,
+                    target_cluster=request.target_cluster,
+                    image_selections=image_selections,
+                    variables=variables,
+                    is_internal=request.is_internal,
+                    netbox_slug=request.netbox_slug
+                ):
+                    if msg.startswith("__DONE__:"):
+                        repo_path = msg.replace("__DONE__:", "")
+                        yield hau_pb2.DeployTenantScaffoldResponse(
+                            success=True,
+                            message=f"Successfully scaffolded {request.tenant_acronym} into {repo_path}"
+                        )
+                    else:
+                        yield hau_pb2.DeployTenantScaffoldResponse(
+                            success=True,
+                            message=msg
+                        )
+        except Exception as e:
+            logger.error(f"Failed to scaffold tenant: {e}", exc_info=True)
+            yield hau_pb2.DeployTenantScaffoldResponse(
+                success=False,
+                message=f"Scaffolding failed: {str(e)}"
+            )
+
+    @handle_rpc(hau_pb2.DecommissionTenantResponse)
+    def DecommissionTenant(self, request, context):
+        try:
+            with self._get_db_session(write=True) as session:
+                if not session:
+                    yield hau_pb2.DecommissionTenantResponse(success=False, message="Database not available.")
+                    return
+                
+                sql_writer = SQLWriter(session)
+                from core.orchestrators.decommission_orchestrator import DecommissionOrchestrator
+                orchestrator = DecommissionOrchestrator(self.config, sql_writer)
+                
+                for msg in orchestrator.decommission_tenant(
+                    tenant_acronym=request.tenant_acronym,
+                    region=request.region
+                ):
+                    if msg == "__DONE__":
+                        yield hau_pb2.DecommissionTenantResponse(
+                            success=True,
+                            message=f"Successfully decommissioned {request.tenant_acronym}"
+                        )
+                    else:
+                        yield hau_pb2.DecommissionTenantResponse(
+                            success=True,
+                            message=msg
+                        )
+        except Exception as e:
+            logger.error(f"Failed to decommission tenant: {e}", exc_info=True)
+            yield hau_pb2.DecommissionTenantResponse(
+                success=False,
+                message=f"Decommission failed: {str(e)}"
+            )
+
+    @handle_rpc(hau_pb2.GetBaseSchemaResponse)
+    def GetBaseSchema(self, request, context):
+        try:
+            import yaml
+            import os
+            
+            # For now we only care about backend and redis
+            is_vendor = (request.component == 'redis')
+            base_dir = "vendor" if is_vendor else "halo"
+            
+            repo_path = self.config.get('git_workspace', '/ai/utilities/halo_admin_utility/cache/halo/deployment')
+            schema_path = os.path.join(repo_path, 'base', base_dir, request.component, 'schema.yaml')
+            
+            if not os.path.exists(schema_path):
+                return hau_pb2.GetBaseSchemaResponse(success=False, message=f"Schema not found for component {request.component}")
+                
+            with open(schema_path, 'r') as f:
+                schema_yaml = f.read()
+                
+            return hau_pb2.GetBaseSchemaResponse(
+                success=True,
+                message="Schema found",
+                schema_yaml=schema_yaml
+            )
+        except Exception as e:
+            logger.error(f"[GetBaseSchema] Failed: {e}")
+            return hau_pb2.GetBaseSchemaResponse(success=False, message=str(e))

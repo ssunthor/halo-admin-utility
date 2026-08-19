@@ -26,6 +26,9 @@ service HauService {
   rpc ListFeatures(ListFeaturesRequest) returns (ListFeaturesResponse);
   rpc UpsertFeature(UpsertFeatureRequest) returns (UpsertFeatureResponse);
   rpc NetboxAuditTenant(NetboxAuditTenantRequest) returns (NetboxAuditTenantResponse);
+  rpc DeployTenantScaffold(DeployTenantScaffoldRequest) returns (stream DeployTenantScaffoldResponse);
+  rpc DecommissionTenant(DecommissionTenantRequest) returns (stream DecommissionTenantResponse);
+  rpc GetBaseSchema(GetBaseSchemaRequest) returns (GetBaseSchemaResponse);
 }
 
 message InventorySyncRequest {}
@@ -306,4 +309,39 @@ message NetboxAuditTenantResponse {
   bool success = 1;
   string message = 2;
   string result_json = 3;
+}
+
+message DeployTenantScaffoldRequest {
+  string tenant_acronym = 1;
+  string region = 2;
+  string target_cluster = 3;
+  map<string, string> image_selections = 4;
+  map<string, string> variables = 5;
+  bool is_internal = 6;
+  string netbox_slug = 7;
+}
+
+message DeployTenantScaffoldResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DecommissionTenantRequest {
+  string tenant_acronym = 1;
+  string region = 2;
+}
+
+message DecommissionTenantResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetBaseSchemaRequest {
+  string component = 1;
+}
+
+message GetBaseSchemaResponse {
+  bool success = 1;
+  string message = 2;
+  string schema_yaml = 3;
 }

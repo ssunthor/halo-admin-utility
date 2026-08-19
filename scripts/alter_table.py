@@ -34,6 +34,7 @@ def main():
     alter_query2 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(255);")
     alter_query3 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_group VARCHAR(255);")
     alter_query4 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS netbox_id INTEGER;")
+    alter_query5 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS cmd_group_id VARCHAR(255);")
     
     try:
         with engine.connect() as conn:
@@ -41,6 +42,7 @@ def main():
             conn.execute(alter_query2)
             conn.execute(alter_query3)
             conn.execute(alter_query4)
+            conn.execute(alter_query5)
             conn.commit()
         logger.info("✅ Successfully executed alter query.")
     except Exception as e:

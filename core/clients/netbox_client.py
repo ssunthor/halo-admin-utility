@@ -174,3 +174,14 @@ class NetboxClient:
                 logger.error(f"Failed to fetch VM IPs chunk: {e}")
         return results
 
+    def get_tenant(self, slug: str):
+        try:
+            params = {'slug': slug}
+            results = self._paginate("/api/tenancy/tenants/", params)
+            if results:
+                return results[0]
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch tenant {slug}: {e}")
+            raise Exception(f"Failed to fetch tenant {slug}: {e}")
+

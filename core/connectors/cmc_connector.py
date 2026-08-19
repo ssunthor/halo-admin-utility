@@ -95,3 +95,27 @@ def get_gnid_a_site(gnid_id: int) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error calling CMC GetGnidASite: {e}", exc_info=True)
         return {"success": False, "error_message": str(e)}
+
+def get_client_basic_info(client_id: int) -> Optional[Dict[str, Any]]:
+    if not _stub:
+        logger.warning("CMC connector not initialized. Cannot get client basic info.")
+        return None
+
+    try:
+        request = _cmc_service_pb2.GetClientBasicInfoRequest(client_id=client_id)
+        response = _stub.GetClientBasicInfo(request, timeout=20, metadata=(('client_application', 'HAU'),))
+
+        if response.success:
+            return {
+                "success": True,
+                "client_id": response.client_id,
+                "client_name": response.client_name,
+                "group_id": response.group_id,
+                "group_name": response.group_name
+            }
+        else:
+            return {"success": False, "error_message": getattr(response, 'error_message', 'Unknown Error')}
+
+    except Exception as e:
+        logger.error(f"Error calling CMC GetClientBasicInfo: {e}", exc_info=True)
+        return {"success": False, "error_message": str(e)}

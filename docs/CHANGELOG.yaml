@@ -15,6 +15,22 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.1.8
+  date: "2026-08-19"
+  author: "Martin Kecka"
+  changes:
+    - "category": "✨ New Features & Enhancements"
+      "items":
+      - "Implemented `DeployTenantScaffold` gRPC endpoint and corresponding CLI commands to automate the creation of tenant environments."
+      - "Implemented `DecommissionTenant` gRPC endpoint and corresponding CLI commands to automate tenant teardown processes."
+      - "Added `GetBaseSchema` gRPC endpoint to programmatically retrieve component schema YAMLs from the Git workspace."
+      - "Enhanced `cmc_connector` with `get_client_basic_info` to retrieve client and group metadata from the CMC API."
+      - "Added `get_tenant` method to `NetboxClient` to support slug-based tenant lookups."
+    - "category": "\U0001F680 Architecture & Infrastructure"
+      "items":
+      - "Expanded `HaloTenant` database schema to include `cmd_group_id` for better integration with CMD group tracking."
+      - "Integrated `cmu` (Configuration Management Utility) connector configuration into the system settings."
+
 - version: '0.1.7'
   date: '2026-08-18'
   author: 'Martin Kecka'

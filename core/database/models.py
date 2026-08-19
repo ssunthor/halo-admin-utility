@@ -34,6 +34,7 @@ class HaloTenant(Base):
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
     cmd_tenant_id = Column(String(255), nullable=True)
+    cmd_group_id = Column(String(255), nullable=True)
     netbox_id = Column(Integer, nullable=True)
     tenant_acronym = Column(String(50), nullable=False, unique=True)
     tenant_name = Column(String(255), nullable=False)

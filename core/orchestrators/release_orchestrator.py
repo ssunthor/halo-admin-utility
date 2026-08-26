@@ -11,7 +11,7 @@ from datetime import datetime
 from core.orchestrators.changelog_orchestrator import ChangelogOrchestrator
 from core.llm_interface import vLLMClient
 from prompts.git_commit_prompt import GIT_COMMIT_PROMPT
-from core.database.database import get_engine, get_session_factory
+from core.database.database import get_db_session
 from core.io_handlers.sql_reader import SQLReader
 from core.io_handlers.sql_writer import SQLWriter
 from core.managers.git_pipeline_manager import GitPipelineManager
@@ -27,12 +27,7 @@ class ReleaseOrchestrator:
         self.pipeline_manager = GitPipelineManager(config)
         self.registry_manager = ContainerRegistryManager(config)
         self.inventory_manager = GitInventoryManager(config)
-        db_config = self.config.get('database', {})
-        dsn = db_config.get('write_dsn')
-        self.Session = None
-        if dsn:
-            engine = get_engine(dsn)
-            self.Session = get_session_factory(engine)
+        self.use_db = True # Assumes database is initialized upstream
 
     def _format_release_notes(self, version: str, changelog_entry: dict) -> str:
         md = f"## Release {version}\n\n"
@@ -61,9 +56,15 @@ class ReleaseOrchestrator:
         sql_reader = None
         sql_writer = None
         
-        if self.Session:
+        # We need to manage the session manually here because this is a long-running generator
+        # and we don't want to hold a transaction open across network waits.
+        # Actually, using a contextmanager for the whole generator is fine as long as we commit when needed.
+        # To match the old logic exactly, we'll extract the session from the context manager manually.
+        ctx = None
+        if self.use_db:
+            ctx = get_db_session(read_only=False)
+            session = ctx.__enter__()
             try:
-                session = self.Session()
                 sql_reader = SQLReader(session)
                 sql_writer = SQLWriter(session)
                 
@@ -116,7 +117,8 @@ class ReleaseOrchestrator:
                             current_details['trace_logs'] = trace_logs
                             sql_writer.update_git_release_audit_log(audit_log.id, job_details_json=current_details)
                     
-                    session.close()
+                    if ctx:
+                        ctx.__exit__(None, None, None)
                 except Exception:
                     pass
 
@@ -636,9 +638,11 @@ class ReleaseOrchestrator:
         sql_reader = None
         sql_writer = None
         
-        if self.Session:
+        ctx = None
+        if self.use_db:
+            ctx = get_db_session(read_only=False)
+            session = ctx.__enter__()
             try:
-                session = self.Session()
                 sql_reader = SQLReader(session)
                 sql_writer = SQLWriter(session)
                 
@@ -696,7 +700,8 @@ class ReleaseOrchestrator:
                             current_details['trace_logs'] = trace_logs
                             sql_writer.update_git_release_audit_log(audit_log.id, job_details_json=current_details)
                     
-                    session.close()
+                    if ctx:
+                        ctx.__exit__(None, None, None)
                 except Exception:
                     pass
 

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 import hau_pb2
 import hau_pb2_grpc
-from core.database.database import get_engine, get_session_factory
+from core.database.database import get_db_session
 from core.io_handlers.sql_reader import SQLReader
 from core.io_handlers.sql_writer import SQLWriter
 from core.orchestrators.inventory_orchestrator import InventoryOrchestrator
@@ -81,24 +81,8 @@ def handle_rpc(response_class):
 class DependencyProviderMixin:
     @contextmanager
     def _get_db_session(self, write=False):
-        db_config = self.config.get('database', {})
-        dsn = db_config.get('write_dsn') if write else db_config.get('read_dsn')
-        if not dsn:
-            yield None
-        else:
-            engine = get_engine(dsn)
-            SessionFactory = get_session_factory(engine)
-            session = SessionFactory()
-            try:
-                yield session
-                if write:
-                    session.commit()
-            except Exception:
-                if write:
-                    session.rollback()
-                raise
-            finally:
-                session.close()
+        with get_db_session(read_only=not write) as session:
+            yield session
 
 class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixin):
     def __init__(self, config):

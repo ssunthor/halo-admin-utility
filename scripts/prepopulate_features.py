@@ -10,7 +10,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from halo_admin_utility import load_config
-from core.database.database import get_engine, get_session_factory
+from core.database.database import initialize_database, get_db_session
 from core.io_handlers.sql_writer import SQLWriter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-5s - [%(name)s] - %(message)s')
@@ -234,12 +234,14 @@ def main():
         sys.exit(1)
         
     logger.info("Connecting to the database...")
-    engine = get_engine(write_dsn)
+    logger.info("Connecting to the database...")
+    initialize_database(config)
     
     logger.info("Ensuring feature_catalog table exists...")
     from sqlalchemy import text
-    with engine.connect() as conn:
-        conn.execute(text("""
+    try:
+        with get_db_session(read_only=False) as session:
+            session.execute(text("""
             CREATE TABLE IF NOT EXISTS feature_catalog (
                 id VARCHAR(36) PRIMARY KEY,
                 feature_name VARCHAR(255) NOT NULL,
@@ -256,38 +258,28 @@ def main():
             );
         """))
         
-        # In case the table already exists, explicitly add the column
-        conn.execute(text("ALTER TABLE feature_catalog ADD COLUMN IF NOT EXISTS pricing_tiers JSON DEFAULT '{}';"))
-        
-        conn.commit()
-    
-    SessionFactory = get_session_factory(engine)
-    session = SessionFactory()
-    
-    writer = SQLWriter(session)
-    try:
-        count = 0
-        for f in INITIAL_FEATURES:
-            writer.upsert_feature(
-                feature_name=f["feature_name"],
-                env_variable=f["env_variable"],
-                description=f["description"],
-                product_category=f["product_category"],
-                ui_grouping=f["ui_grouping"],
-                gitops_dependencies=f.get("gitops_dependencies", {}),
-                pricing_tiers=f.get("pricing_tiers", {}),
-                is_paid_addon=f["is_paid_addon"],
-                enabled_by_default=f["enabled_by_default"]
-            )
-            count += 1
+            # In case the table already exists, explicitly add the column
+            session.execute(text("ALTER TABLE feature_catalog ADD COLUMN IF NOT EXISTS pricing_tiers JSON DEFAULT '{}';"))
             
-        session.commit()
-        logger.info(f"Successfully prepopulated {count} features in FeatureCatalog.")
+            writer = SQLWriter(session)
+            count = 0
+            for f in INITIAL_FEATURES:
+                writer.upsert_feature(
+                    feature_name=f["feature_name"],
+                    env_variable=f["env_variable"],
+                    description=f["description"],
+                    product_category=f["product_category"],
+                    ui_grouping=f["ui_grouping"],
+                    gitops_dependencies=f.get("gitops_dependencies", {}),
+                    pricing_tiers=f.get("pricing_tiers", {}),
+                    is_paid_addon=f["is_paid_addon"],
+                    enabled_by_default=f["enabled_by_default"]
+                )
+                count += 1
+                
+            logger.info(f"Successfully prepopulated {count} features in FeatureCatalog.")
     except Exception as e:
-        session.rollback()
         logger.error(f"Failed to prepopulate features: {e}")
-    finally:
-        session.close()
 
 if __name__ == "__main__":
     main()

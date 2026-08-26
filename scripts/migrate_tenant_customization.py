@@ -8,21 +8,19 @@ if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
 from halo_admin_utility import load_config
-from core.database.database import get_engine
-from core.database.models import Base
+from core.database.database import initialize_database, get_db_session, init_db
 
 def main():
     config = load_config()
-    write_dsn = config.get('database', {}).get('write_dsn')
-    engine = get_engine(write_dsn)
+    initialize_database(config)
     
     # 1. Create the new tables (tenant_customization)
-    Base.metadata.create_all(bind=engine)
+    init_db()
     
-    with engine.connect() as conn:
+    with get_db_session(read_only=False) as session:
         try:
             print("Fetching legacy is_internal flags...")
-            result = conn.execute(text("SELECT id, is_internal FROM halo_tenant;"))
+            result = session.execute(text("SELECT id, is_internal FROM halo_tenant;"))
             tenants = result.fetchall()
             
             print(f"Migrating {len(tenants)} tenants to tenant_customization...")
@@ -32,13 +30,13 @@ def main():
                 category = "INTERNAL" if is_internal else "CUSTOMER"
                 
                 # Check if it already exists
-                exists = conn.execute(
+                exists = session.execute(
                     text("SELECT 1 FROM tenant_customization WHERE tenant_id = :tenant_id"), 
                     {"tenant_id": tenant_id}
                 ).fetchone()
                 
                 if not exists:
-                    conn.execute(
+                    session.execute(
                         text("""
                             INSERT INTO tenant_customization 
                             (tenant_id, tenant_category, tenant_tier, update_policy, owner, configuration_payload) 
@@ -46,30 +44,28 @@ def main():
                         """),
                         {"tenant_id": tenant_id, "tenant_category": category}
                     )
-            conn.commit()
+            session.flush()
             
             print("Dropping legacy columns and tables...")
             try:
-                conn.execute(text("ALTER TABLE halo_tenant DROP COLUMN IF EXISTS is_internal;"))
+                session.execute(text("ALTER TABLE halo_tenant DROP COLUMN IF EXISTS is_internal;"))
             except Exception as e:
                 print(f"Failed to drop is_internal (may already be dropped): {e}")
             
             try:
-                conn.execute(text("ALTER TABLE halo_tenant DROP COLUMN IF EXISTS is_internal_overridden;"))
+                session.execute(text("ALTER TABLE halo_tenant DROP COLUMN IF EXISTS is_internal_overridden;"))
             except Exception as e:
                 print(f"Failed to drop is_internal_overridden: {e}")
 
             try:
-                conn.execute(text("ALTER TABLE halo_tenant DROP COLUMN IF EXISTS environment;"))
+                session.execute(text("ALTER TABLE halo_tenant DROP COLUMN IF EXISTS environment;"))
             except Exception as e:
                 print(f"Failed to drop environment: {e}")
             
             try:
-                conn.execute(text("DROP TABLE IF EXISTS tenant_feature_flag CASCADE;"))
+                session.execute(text("DROP TABLE IF EXISTS tenant_feature_flag CASCADE;"))
             except Exception as e:
                 print(f"Failed to drop tenant_feature_flag: {e}")
-                
-            conn.commit()
             print("Migration complete.")
         except Exception as e:
             print(f"Migration error: {e}")

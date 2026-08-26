@@ -10,7 +10,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from halo_admin_utility import load_config
-from core.database.database import get_engine
+from core.database.database import initialize_database, get_db_session
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-5s - [%(name)s] - %(message)s')
 logger = logging.getLogger("fix_audit_authors")
@@ -24,14 +24,13 @@ def main():
         sys.exit(1)
         
     logger.info("Connecting to the database...")
-    engine = get_engine(write_dsn)
+    initialize_database(config)
     
     update_query = text("UPDATE git_release_audit_log SET actor = 'Martin Kecka' WHERE actor IN ('gia-ai', 'HAM', 'Martin');")
     
     try:
-        with engine.connect() as conn:
-            result = conn.execute(update_query)
-            conn.commit()
+        with get_db_session(read_only=False) as session:
+            result = session.execute(update_query)
         logger.info(f"✅ Successfully updated {result.rowcount} rows in the audit log.")
     except Exception as e:
         logger.error(f"Failed to execute query: {e}")

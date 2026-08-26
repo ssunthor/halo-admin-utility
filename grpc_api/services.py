@@ -20,6 +20,9 @@ from grpc_api.sera_standard_service import SeraStandardServiceImpl
 logger = logging.getLogger(__name__)
 
 def serve(config: Dict[str, Any]):
+    from core.database.database import initialize_database
+    initialize_database(config)
+
     max_workers = int(config['system_services']['grpc']['max_workers'])
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
     

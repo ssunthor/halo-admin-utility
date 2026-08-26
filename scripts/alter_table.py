@@ -10,7 +10,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from halo_admin_utility import load_config
-from core.database.database import get_engine
+from core.database.database import initialize_database, get_db_session
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-5s - [%(name)s] - %(message)s')
 logger = logging.getLogger("alter_table")
@@ -24,7 +24,7 @@ def main():
         sys.exit(1)
         
     logger.info("Connecting to the database...")
-    engine = get_engine(write_dsn)
+    initialize_database(config)
     
     # --------------------------------------------------------------------------------
     # [UNIVERSAL ALTER SCRIPT]
@@ -37,13 +37,12 @@ def main():
     alter_query5 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS cmd_group_id VARCHAR(255);")
     
     try:
-        with engine.connect() as conn:
-            conn.execute(alter_query1)
-            conn.execute(alter_query2)
-            conn.execute(alter_query3)
-            conn.execute(alter_query4)
-            conn.execute(alter_query5)
-            conn.commit()
+        with get_db_session(read_only=False) as session:
+            session.execute(alter_query1)
+            session.execute(alter_query2)
+            session.execute(alter_query3)
+            session.execute(alter_query4)
+            session.execute(alter_query5)
         logger.info("✅ Successfully executed alter query.")
     except Exception as e:
         logger.error(f"Failed to execute query (perhaps it was already applied?): {e}")

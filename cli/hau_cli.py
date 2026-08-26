@@ -77,10 +77,10 @@ def start_grpc_server(ctx: click.Context):
     importlib.invalidate_caches()
 
 
-    from core.database.database import get_engine, init_db
+    from core.database.database import initialize_database, init_db
     try:
-        engine = get_engine(config['database']['write_dsn'])
-        init_db(engine)
+        initialize_database(config)
+        init_db()
         logger.info("Database tables initialized successfully.")
     except Exception as e:
         logger.critical(f"Failed to initialize database: {e}")
@@ -98,16 +98,16 @@ def init_db_cmd(ctx, force):
         click.secho("Config not found in context.", fg="red")
         sys.exit(1)
     
-    from core.database.database import get_engine, init_db, reset_db
+    from core.database.database import initialize_database, init_db, reset_db
     try:
-        engine = get_engine(config['database']['write_dsn'])
+        initialize_database(config)
         if force:
             click.secho("Wiping and recreating all database tables...", fg="yellow")
-            reset_db(engine)
+            reset_db()
             click.secho("✅ Database reset complete.", fg="green")
         else:
             click.secho("Initializing database tables (if they do not exist)...", fg="cyan")
-            init_db(engine)
+            init_db()
             click.secho("✅ Database initialization complete. (Use --force to wipe and reset)", fg="green")
     except Exception as e:
         click.secho(f"Failed to initialize database: {e}", fg="red")

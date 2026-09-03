@@ -48,8 +48,21 @@ class InventoryOrchestrator:
 
     def _process_app_namespace(self, km, app_cluster, ns_name):
         self.valid_app_namespaces.add(ns_name)
+        
+        if ns_name.startswith("halo-"):
+            parts = ns_name[5:].split("-")
+        elif ns_name.startswith("tenant-"):
+            parts = ns_name[7:].split("-")
+        else:
+            parts = ns_name.split("-")
+            
+        t_acronym = parts[0]
+        t_env = "-".join(parts[1:]) if len(parts) > 1 else ""
+        
         tenant = self.sql_writer.upsert_halo_tenant(
-            slug_name=ns_name,
+            tenant_acronym=t_acronym,
+            tenant_environment=t_env,
+            tenant_namespace=ns_name,
             target_cluster=app_cluster
         )
             
@@ -196,14 +209,25 @@ class InventoryOrchestrator:
                 
             tenant_slug = self._infer_tenant_from_pipeline(dep_name)
             if tenant_slug and tenant_slug in self.valid_app_namespaces:
+                if tenant_slug.startswith("halo-"):
+                    parts = tenant_slug[5:].split("-")
+                else:
+                    parts = tenant_slug.split("-")
+                t_acronym = parts[0]
+                t_env = "-".join(parts[1:]) if len(parts) > 1 else ""
+                
                 tenant = self.sql_writer.upsert_halo_tenant(
-                    slug_name=tenant_slug,
+                    tenant_acronym=t_acronym,
+                    tenant_environment=t_env,
+                    tenant_namespace=tenant_slug,
                     target_cluster=cluster_conf.get('halo_cluster_name', 'UNKNOWN')
                 )
             else:
                 unmapped_slug = f"unmapped-gpu-{region}"
                 tenant = self.sql_writer.upsert_halo_tenant(
-                    slug_name=unmapped_slug,
+                    tenant_acronym=unmapped_slug,
+                    tenant_environment="",
+                    tenant_namespace=unmapped_slug,
                     target_cluster=gpu_cluster
                 )
             tenant_map[dep_name] = tenant

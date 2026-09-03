@@ -45,7 +45,7 @@ class SQLWriter:
             HaloTenant.lifecycle_state != LifecycleState.DECOMMISSIONED
         ).all()
         for orphan in orphans:
-            logger.info(f"Marking orphaned tenant: {orphan.slug_name} as ORPHANED")
+            logger.info(f"Marking orphaned tenant: {orphan.tenant_namespace} as ORPHANED")
             orphan.lifecycle_state = LifecycleState.ORPHANED
         self.session.flush()
 
@@ -57,7 +57,7 @@ class SQLWriter:
         ).all()
         count = len(orphans)
         for orphan in orphans:
-            logger.info(f"Physically deleting orphaned/decommissioned tenant: {orphan.slug_name}")
+            logger.info(f"Physically deleting orphaned/decommissioned tenant: {orphan.tenant_namespace}")
             self.session.delete(orphan)
         self.session.flush()
         return count
@@ -146,15 +146,17 @@ class SQLWriter:
                     ))
         self.session.commit()
 
-    def upsert_halo_tenant(self, slug_name: str, target_cluster: str):
+    def upsert_halo_tenant(self, tenant_acronym: str, tenant_environment: str, tenant_namespace: str, target_cluster: str):
         tenant = self.session.query(HaloTenant).filter_by(
-            slug_name=slug_name, 
+            tenant_namespace=tenant_namespace, 
             target_cluster=target_cluster
         ).first()
         
         if not tenant:
             tenant = HaloTenant(
-                slug_name=slug_name,
+                tenant_acronym=tenant_acronym,
+                tenant_environment=tenant_environment,
+                tenant_namespace=tenant_namespace,
                 target_cluster=target_cluster
             )
             self.session.add(tenant)
@@ -192,10 +194,10 @@ class SQLWriter:
                 resource.cluster_name = cluster_name
         return resource
 
-    def update_tenant_customization(self, slug_name: str, **kwargs):
-        tenant = self.session.query(HaloTenant).filter_by(slug_name=slug_name).first()
+    def update_tenant_customization(self, tenant_namespace: str, **kwargs):
+        tenant = self.session.query(HaloTenant).filter_by(tenant_namespace=tenant_namespace).first()
         if not tenant:
-            return False, f"Tenant '{slug_name}' not found."
+            return False, f"Tenant '{tenant_namespace}' not found."
             
         from core.database.models import TenantCustomization
         if not tenant.customization:
@@ -212,7 +214,7 @@ class SQLWriter:
                 setattr(tenant.customization, k, v)
                 
         self.session.flush()
-        return True, f"Successfully updated customization for {slug_name}"
+        return True, f"Successfully updated customization for {tenant_namespace}"
 
     def create_git_release_audit_log(self, project_name: str, action: str, actor: str, status: str, source_branch: str = None, target_branch: str = None, merge_request_id: str = None, version_tag: str = None):
         log = GitReleaseAuditLog(

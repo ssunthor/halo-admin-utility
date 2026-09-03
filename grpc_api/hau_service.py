@@ -89,12 +89,13 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         self.config = config
         
         self.vault_client = None
-        if 'vault_paths' in config and 'rancher_system' in config['vault_paths']:
+        if 'vault_paths' in config and 'rancher_admin' in config['vault_paths']:
             try:
                 from core.clients.vault_client import VaultClient
                 self.vault_client = VaultClient(config['external_services']['vault'])
-                path = config['vault_paths']['rancher_system']
-                clusters = self.vault_client.get_rancher_tokens(path=path)
+                path_template = config['vault_paths']['rancher_admin']
+                locations = config.get('rancher_clusters', {}).keys()
+                clusters = self.vault_client.get_rancher_tokens(path_template=path_template, locations=locations)
                 if clusters:
                     for region, data in clusters.items():
                         if region in self.config.get('rancher_clusters', {}):
@@ -182,9 +183,56 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 return hau_pb2.InventoryListResponse(success=False, message="Database configuration is missing.", result_json="{}")
             
             sql_reader = SQLReader(session)
-            result = sql_reader.get_all_inventory(tenant_slug=request.tenant_slug)
+            result = sql_reader.get_all_inventory(
+                tenant_namespace=request.tenant_namespace,
+                tenant=request.tenant,
+                env=request.env
+            )
             
             return hau_pb2.InventoryListResponse(success=True, message="Fetched inventory", result_json=json.dumps(result))
+
+    @handle_rpc(hau_pb2.TenantListResponse)
+    def TenantList(self, request, context):
+        with self._get_db_session(write=False) as session:
+            if not session:
+                return hau_pb2.TenantListResponse(success=False, message="Database configuration is missing.")
+            
+            sql_reader = SQLReader(session)
+            db_tenants = sql_reader.get_all_tenants(
+                tenant_namespace=request.tenant_namespace,
+                tenant=request.tenant,
+                env=request.env
+            )
+            
+            tenants_out = []
+            for t in db_tenants:
+                info = hau_pb2.TenantInfo(
+                    id=t.id or "",
+                    tenant_namespace=t.tenant_namespace or "",
+                    tenant_acronym=t.tenant_acronym or "",
+                    tenant_environment=t.tenant_environment or "",
+                    target_cluster=t.target_cluster or "",
+                    netbox_slug=t.netbox_slug or "",
+                    tenant_category=t.customization.tenant_category if t.customization else "CUSTOMER",
+                    tenant_tier=t.customization.tenant_tier if t.customization else "UNKNOWN",
+                    update_policy=t.customization.update_policy if t.customization else "MANUAL_ONLY",
+                    owner=t.customization.owner if t.customization else "UNASSIGNED",
+                    purpose=t.customization.purpose if t.customization else "",
+                    maintenance_window=t.customization.maintenance_window if t.customization else "",
+                    url=t.url or "",
+                    cmd_tenant_id=t.cmd_tenant_id or "",
+                    cmd_group_id=t.cmd_group_id or "",
+                    netbox_id=t.netbox_id or 0,
+                    tenant_name=t.tenant_name or "",
+                    tenant_group=t.tenant_group or "",
+                    halo_version=t.halo_version or "",
+                    lifecycle_state=t.lifecycle_state.value if t.lifecycle_state else "",
+                    created_at=t.created_at.isoformat() if t.created_at else "",
+                    updated_at=t.updated_at.isoformat() if t.updated_at else ""
+                )
+                tenants_out.append(info)
+                
+            return hau_pb2.TenantListResponse(success=True, message=f"Fetched {len(tenants_out)} tenants.", tenants=tenants_out)
 
     @handle_rpc(hau_pb2.InventoryDeleteOrphanedResponse)
     def InventoryDeleteOrphaned(self, request, context):
@@ -213,7 +261,16 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 "maintenance_window": getattr(request, 'maintenance_window', ""),
                 "configuration_payload": getattr(request, 'configuration_payload', ""),
             }
-            success, message = sql_writer.update_tenant_customization(request.tenant_slug, **kwargs)
+            sql_reader = SQLReader(session)
+            try:
+                db_tenant = sql_reader.get_tenant(request.tenant_namespace, request.tenant, request.env)
+            except ValueError as ve:
+                return hau_pb2.UpdateTenantCustomizationResponse(success=False, message=str(ve))
+                
+            if not db_tenant:
+                return hau_pb2.UpdateTenantCustomizationResponse(success=False, message="Tenant not found.")
+                
+            success, message = sql_writer.update_tenant_customization(db_tenant.tenant_namespace, **kwargs)
             return hau_pb2.UpdateTenantCustomizationResponse(success=success, message=message)
 
     @handle_rpc(hau_pb2.GenerateChangelogResponse)
@@ -591,8 +648,22 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         try:
             from core.managers.netbox_audit_manager import NetboxAuditManager
             
+            with self._get_db_session(write=False) as session:
+                if not session:
+                    return hau_pb2.NetboxAuditTenantResponse(success=False, message="Database not available.")
+                sql_reader = SQLReader(session)
+                try:
+                    db_tenant = sql_reader.get_tenant(request.tenant_namespace, request.tenant, request.env)
+                except ValueError as ve:
+                    return hau_pb2.NetboxAuditTenantResponse(success=False, message=str(ve))
+                    
+                if not db_tenant:
+                    return hau_pb2.NetboxAuditTenantResponse(success=False, message="Tenant not found.")
+                
+                target_slug = db_tenant.netbox_slug or db_tenant.tenant_acronym
+            
             manager = NetboxAuditManager(self.config)
-            result = manager.audit_tenant(request.tenant_slug, request.ip_audit)
+            result = manager.audit_tenant(target_slug, request.ip_audit)
             
             return hau_pb2.NetboxAuditTenantResponse(
                 success=True,
@@ -619,7 +690,8 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 variables = dict(request.variables) if request.variables else {}
                 
                 for msg in orchestrator.scaffold_tenant(
-                    tenant_acronym=request.tenant_acronym,
+                    tenant=request.tenant,
+                    env=request.env,
                     region=request.region,
                     target_cluster=request.target_cluster,
                     image_selections=image_selections,
@@ -631,7 +703,7 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                         repo_path = msg.replace("__DONE__:", "")
                         yield hau_pb2.DeployTenantScaffoldResponse(
                             success=True,
-                            message=f"Successfully scaffolded {request.tenant_acronym} into {repo_path}"
+                            message=f"Successfully scaffolded {request.tenant} into {repo_path}"
                         )
                     else:
                         yield hau_pb2.DeployTenantScaffoldResponse(
@@ -658,13 +730,14 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 orchestrator = DecommissionOrchestrator(self.config, sql_writer)
                 
                 for msg in orchestrator.decommission_tenant(
-                    tenant_acronym=request.tenant_acronym,
+                    tenant=request.tenant,
+                    env=request.env,
                     region=request.region
                 ):
                     if msg == "__DONE__":
                         yield hau_pb2.DecommissionTenantResponse(
                             success=True,
-                            message=f"Successfully decommissioned {request.tenant_acronym}"
+                            message=f"Successfully decommissioned {request.tenant}"
                         )
                     else:
                         yield hau_pb2.DecommissionTenantResponse(

@@ -33,23 +33,17 @@ class VaultClient:
             logger.error(f"Vault authentication failed: {e}")
             raise
 
-    def get_rancher_tokens(self, path="rancher/system/gia_ai", mount_point="secret"):
-        """Fetches the Rancher tokens for clusters."""
-        try:
-            response = self.client.secrets.kv.v2.read_secret_version(
-                mount_point=mount_point, 
-                path=path
-            )
-            data = response['data']['data']
-            
-            if 'clusters' not in data:
-                raise KeyError(f"Key 'clusters' not found at Vault path '{path}'")
-                
-            logger.debug(f"Successfully retrieved Rancher tokens from Vault.")
-            return data.get('clusters')
-        except hvac.exceptions.InvalidPath:
-            logger.error(f"Vault path '{mount_point}/{path}' does not exist.")
-            raise
-        except Exception as e:
-            logger.error(f"Error retrieving Rancher tokens from Vault: {e}")
-            raise
+    def get_rancher_tokens(self, path_template, locations, mount_point="secret"):
+        """Fetches the Rancher tokens for clusters across multiple locations dynamically."""
+        clusters_data = {}
+        for loc in locations:
+            path = path_template.format(loc=loc)
+            try:
+                response = self.client.secrets.kv.v2.read_secret_version(
+                    mount_point=mount_point, 
+                    path=path
+                )
+                clusters_data[loc] = response['data']['data']
+            except Exception as e:
+                pass
+        return clusters_data

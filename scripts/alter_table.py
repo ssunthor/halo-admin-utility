@@ -30,19 +30,45 @@ def main():
     # [UNIVERSAL ALTER SCRIPT]
     # Modify the `alter_query` below to execute any arbitrary schema changes.
     # --------------------------------------------------------------------------------
-    alter_query1 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_acronym VARCHAR(50);")
-    alter_query2 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(255);")
-    alter_query3 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_group VARCHAR(255);")
-    alter_query4 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS netbox_id INTEGER;")
-    alter_query5 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS cmd_group_id VARCHAR(255);")
+    alter_query1 = text("ALTER TABLE halo_tenant RENAME COLUMN slug_name TO tenant_namespace;")
+    alter_query2 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS tenant_environment VARCHAR(50);")
+    alter_query3 = text("ALTER TABLE halo_tenant ADD COLUMN IF NOT EXISTS netbox_slug VARCHAR(255);")
+    alter_query4 = text("""
+        UPDATE halo_tenant 
+        SET tenant_acronym = 
+            CASE 
+                WHEN tenant_namespace LIKE 'halo-%' THEN split_part(tenant_namespace, '-', 2)
+                WHEN tenant_namespace LIKE 'tenant-%' THEN split_part(tenant_namespace, '-', 2)
+                ELSE split_part(tenant_namespace, '-', 1)
+            END
+        WHERE tenant_acronym IS NULL OR tenant_acronym = '';
+    """)
+    alter_query5 = text("""
+        UPDATE halo_tenant
+        SET tenant_environment = 
+            CASE 
+                WHEN tenant_namespace LIKE 'halo-%-%' THEN array_to_string((string_to_array(tenant_namespace, '-'))[3:], '-')
+                WHEN tenant_namespace LIKE 'tenant-%-%' THEN array_to_string((string_to_array(tenant_namespace, '-'))[3:], '-')
+                ELSE ''
+            END
+        WHERE tenant_environment IS NULL;
+    """)
+    alter_query6 = text("ALTER TABLE halo_tenant DROP CONSTRAINT IF EXISTS halo_tenant_tenant_acronym_key;")
+    alter_query7 = text("ALTER TABLE halo_tenant DROP CONSTRAINT IF EXISTS halo_tenant_netbox_slug_key;")
     
     try:
         with get_db_session(read_only=False) as session:
-            session.execute(alter_query1)
+            try:
+                session.execute(alter_query1)
+            except Exception as e:
+                logger.warning(f"Could not rename slug_name, maybe already done? {e}")
             session.execute(alter_query2)
             session.execute(alter_query3)
             session.execute(alter_query4)
             session.execute(alter_query5)
+            session.execute(alter_query6)
+            session.execute(alter_query7)
+            session.commit()
         logger.info("✅ Successfully executed alter query.")
     except Exception as e:
         logger.error(f"Failed to execute query (perhaps it was already applied?): {e}")

@@ -9,6 +9,43 @@ class SQLReader:
     def __init__(self, session: Session):
         self.session = session
 
+    def get_tenant(self, namespace=None, tenant=None, env=None):
+        if namespace: namespace = namespace.lower()
+        if tenant: tenant = tenant.lower()
+        if env: env = env.lower()
+        
+        query = self.session.query(HaloTenant)
+        if namespace:
+            query = query.filter_by(tenant_namespace=namespace)
+        elif tenant and env:
+            query = query.filter_by(tenant_acronym=tenant, tenant_environment=env)
+        elif tenant:
+            query = query.filter_by(tenant_acronym=tenant)
+        else:
+            return None
+            
+        results = query.all()
+        if len(results) > 1:
+            raise ValueError(f"Multiple environments found for tenant '{tenant}'. Please specify --env or --namespace.")
+        elif len(results) == 1:
+            return results[0]
+        return None
+
+    def get_all_tenants(self, tenant_namespace=None, tenant=None, env=None):
+        if tenant_namespace: tenant_namespace = tenant_namespace.lower()
+        if tenant: tenant = tenant.lower()
+        if env: env = env.lower()
+        
+        from sqlalchemy.orm import joinedload
+        query = self.session.query(HaloTenant).options(joinedload(HaloTenant.customization))
+        if tenant_namespace:
+            query = query.filter_by(tenant_namespace=tenant_namespace)
+        elif tenant and env:
+            query = query.filter_by(tenant_acronym=tenant, tenant_environment=env)
+        elif tenant:
+            query = query.filter_by(tenant_acronym=tenant)
+        return query.all()
+
     def get_feature_catalog(self):
         from core.database.models import FeatureCatalog
         return self.session.query(FeatureCatalog).order_by(FeatureCatalog.product_category, FeatureCatalog.ui_grouping).all()
@@ -17,19 +54,28 @@ class SQLReader:
         from core.database.models import FeatureCatalog
         return self.session.query(FeatureCatalog).filter_by(env_variable=env_variable).first()
 
-    def get_all_inventory(self, tenant_slug: str = None):
+    def get_all_inventory(self, tenant_namespace: str = None, tenant: str = None, env: str = None):
+        if tenant_namespace: tenant_namespace = tenant_namespace.lower()
+        if tenant: tenant = tenant.lower()
+        if env: env = env.lower()
+        
         from sqlalchemy.orm import joinedload
         query = self.session.query(HaloTenant).options(joinedload(HaloTenant.customization))
-        if tenant_slug:
-            query = query.filter_by(slug_name=tenant_slug)
+        if tenant_namespace:
+            query = query.filter_by(tenant_namespace=tenant_namespace)
+        elif tenant and env:
+            query = query.filter_by(tenant_acronym=tenant, tenant_environment=env)
+        elif tenant:
+            query = query.filter_by(tenant_acronym=tenant)
+            
         tenants = query.all()
         result = {}
         for t in tenants:
-            if t.slug_name not in result:
-                result[t.slug_name] = {}
+            if t.tenant_namespace not in result:
+                result[t.tenant_namespace] = {}
             
             tenant_dict = {
-                "slug_name": t.slug_name,
+                "tenant_namespace": t.tenant_namespace,
                 "tenant_category": t.customization.tenant_category if t.customization else "CUSTOMER",
                 "tenant_tier": t.customization.tenant_tier if t.customization else "UNKNOWN",
                 "update_policy": t.customization.update_policy if t.customization else "MANUAL_ONLY",
@@ -49,18 +95,18 @@ class SQLReader:
                 r_cluster = r.cluster_name or t.target_cluster
                 item["cluster"] = r_cluster
                 
-                if r_cluster not in result[t.slug_name]:
-                    result[t.slug_name][r_cluster] = dict(tenant_dict)
-                    result[t.slug_name][r_cluster]["resources"] = {}
+                if r_cluster not in result[t.tenant_namespace]:
+                    result[t.tenant_namespace][r_cluster] = dict(tenant_dict)
+                    result[t.tenant_namespace][r_cluster]["resources"] = {}
                 
-                if r_type not in result[t.slug_name][r_cluster]["resources"]:
-                    result[t.slug_name][r_cluster]["resources"][r_type] = []
+                if r_type not in result[t.tenant_namespace][r_cluster]["resources"]:
+                    result[t.tenant_namespace][r_cluster]["resources"][r_type] = []
                     
-                result[t.slug_name][r_cluster]["resources"][r_type].append(item)
+                result[t.tenant_namespace][r_cluster]["resources"][r_type].append(item)
                 
             if not t.resources:
-                result[t.slug_name][t.target_cluster] = dict(tenant_dict)
-                result[t.slug_name][t.target_cluster]["resources"] = {}
+                result[t.tenant_namespace][t.target_cluster] = dict(tenant_dict)
+                result[t.tenant_namespace][t.target_cluster]["resources"] = {}
                 
         return result
 
@@ -82,7 +128,7 @@ class SQLReader:
                     counts[img] = {'count': 0, 'namespaces': set()}
                 counts[img]['count'] += 1
                 if r.tenant:
-                    counts[img]['namespaces'].add(r.tenant.slug_name)
+                    counts[img]['namespaces'].add(r.tenant.tenant_namespace)
                     
         for img in counts:
             counts[img]['namespaces'] = list(counts[img]['namespaces'])

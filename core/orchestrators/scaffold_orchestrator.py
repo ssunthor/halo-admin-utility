@@ -18,12 +18,13 @@ class ScaffoldOrchestrator:
         cmu_connector.init_cmu_connector(self.config)
         cmc_connector.init_cmc_connector(self.config)
 
-    def scaffold_tenant(self, tenant_acronym, region, target_cluster, image_selections, variables, is_internal=False, netbox_slug=""):
-        yield f"Starting GitOps scaffold for {tenant_acronym} in {region}..."
-        logger.info(f"Starting GitOps scaffold for {tenant_acronym} in {region}")
+    def scaffold_tenant(self, tenant, env, region, target_cluster, image_selections, variables, is_internal=False, netbox_slug=""):
+        tenant_namespace = f"halo-{tenant}-{env}" if env else f"halo-{tenant}"
+        yield f"Starting GitOps scaffold for {tenant_namespace} in {region}..."
+        logger.info(f"Starting GitOps scaffold for {tenant_namespace} in {region}")
         
-        # Derive internal if not explicitly passed but starts with gtt-
-        if not is_internal and tenant_acronym.startswith("gtt-"):
+        # Derive internal if not explicitly passed but starts with gtt
+        if not is_internal and tenant.startswith("gtt"):
             is_internal = True
             
         tenant_category = "INTERNAL" if is_internal else "CUSTOMER"
@@ -31,9 +32,9 @@ class ScaffoldOrchestrator:
         # 1. Pre-flight Check: Does tenant exist in DB?
         yield "Checking local HAU database for existing tenant..."
         session = self.sql_writer.session
-        existing = session.query(HaloTenant).filter_by(tenant_acronym=tenant_acronym).first()
+        existing = session.query(HaloTenant).filter_by(tenant_namespace=tenant_namespace).first()
         if existing:
-            raise ValueError(f"Tenant {tenant_acronym} already exists in DB.")
+            raise ValueError(f"Tenant {tenant_namespace} already exists in DB.")
 
         # 1.5. Pre-flight Check: Verify in NetBox and get basic info
         yield "Verifying tenant in NetBox..."
@@ -47,10 +48,8 @@ class ScaffoldOrchestrator:
             
         nb_client = NetboxClient(url=nb_url, token=nb_token, verify_ssl=nb_verify_ssl)
         
-        actual_netbox_slug = tenant_acronym
-        if netbox_slug:
-            actual_netbox_slug = netbox_slug
-        elif is_internal:
+        actual_netbox_slug = netbox_slug if netbox_slug else (f"{tenant}-{env}" if env else tenant)
+        if not netbox_slug and is_internal:
             actual_netbox_slug = "gtt-corp"
             
         nb_tenant = nb_client.get_tenant(actual_netbox_slug)
@@ -59,16 +58,16 @@ class ScaffoldOrchestrator:
             raise ValueError(f"Tenant {actual_netbox_slug} does not exist in NetBox. Please create it in NetBox first.")
             
         custom_fields = nb_tenant.get('custom_fields') or {}
-        cmd_cst_id = custom_fields.get('cmd_cst_id')
         
-        tenant_name = nb_tenant.get('name', tenant_acronym)
+        tenant_name = nb_tenant.get('name', tenant)
         netbox_id = nb_tenant.get('id')
         cmd_tenant_id = None
         cmd_group_id = None
+        cmd_cst_id = custom_fields.get('cmd_cst_id')
         tenant_group = None
         
         if cmd_cst_id:
-            msg = f"Tenant {tenant_acronym} has CMD ID {cmd_cst_id} in Netbox. Verifying against CMD..."
+            msg = f"Tenant {tenant_namespace} has CMD ID {cmd_cst_id} in Netbox. Verifying against CMD..."
             logger.info(msg)
             yield msg
             
@@ -89,7 +88,7 @@ class ScaffoldOrchestrator:
             elif cmc_info.get('group_id'):
                 cmd_group_id = str(cmc_info.get('group_id'))
         else:
-            msg = f"Tenant {tenant_acronym} has no CMD ID in Netbox. Proceeding as internal tenant."
+            msg = f"Tenant {tenant_namespace} has no CMD ID in Netbox. Proceeding as internal tenant."
             logger.info(msg)
             yield msg
             
@@ -99,13 +98,15 @@ class ScaffoldOrchestrator:
 
         # Save to DB
         new_tenant = HaloTenant(
-            tenant_acronym=tenant_acronym,
+            tenant_acronym=tenant,
+            tenant_environment=env,
+            tenant_namespace=tenant_namespace,
             tenant_name=tenant_name,
             tenant_group=tenant_group,
             cmd_tenant_id=cmd_tenant_id,
             cmd_group_id=cmd_group_id,
             netbox_id=netbox_id,
-            slug_name=actual_netbox_slug,
+            netbox_slug=actual_netbox_slug,
             target_cluster=target_cluster
         )
         
@@ -117,11 +118,11 @@ class ScaffoldOrchestrator:
         
         session.add(new_tenant)
         session.commit()
-        logger.info(f"Registered tenant {tenant_acronym} ({tenant_name}) in HAU DB.")
-        yield f"Registered tenant {tenant_acronym} ({tenant_name}) in HAU DB."
+        logger.info(f"Registered tenant {tenant_namespace} ({tenant_name}) in HAU DB.")
+        yield f"Registered tenant {tenant_namespace} ({tenant_name}) in HAU DB."
 
         # 2. Synchronous CMU Secret Generation
-        yield from self._provision_cmu_secrets_sync(tenant_acronym, tenant_name, image_selections)
+        yield from self._provision_cmu_secrets_sync(tenant, env, tenant_namespace, tenant_name, image_selections)
 
         # 3. GitOps Scaffolding
         yield "Generating GitOps manifests..."
@@ -132,7 +133,7 @@ class ScaffoldOrchestrator:
             raise ValueError(f"halo_cluster_name is missing in settings.yaml for region {region}")
             
         repo_path = self.config.get('git_workspace', '/ai/utilities/halo_admin_utility/cache/halo/deployment')
-        tenant_path = os.path.join(repo_path, 'tenants', region, f"halo-{tenant_acronym}")
+        tenant_path = os.path.join(repo_path, 'tenants', region, tenant_namespace)
         app_path = os.path.join(tenant_path, 'app')
         gpu_path = os.path.join(tenant_path, 'gpu')
         
@@ -202,7 +203,7 @@ class ScaffoldOrchestrator:
             kust_content = {
                 "apiVersion": "kustomize.config.k8s.io/v1beta1",
                 "kind": "Kustomization",
-                "namespace": f"halo-{tenant_acronym}",
+                "namespace": tenant_namespace,
                 "resources": [
                     f"../../../../base/{base_dir}/{component}"
                 ]
@@ -225,10 +226,10 @@ class ScaffoldOrchestrator:
         if app_resources:
             with open(os.path.join(app_path, "kustomization.yaml"), "w") as f:
                 app_kust = {
-                    "namespace": f"halo-{tenant_acronym}",
+                    "namespace": tenant_namespace,
                     "commonAnnotations": {
                         "halo/target-cluster": halo_cluster_name,
-                        "halo/source-file": f"deployment/tenants/{region}/halo-{tenant_acronym}/app/kustomization.yaml"
+                        "halo/source-file": f"deployment/tenants/{region}/{tenant_namespace}/app/kustomization.yaml"
                     },
                     "bases": app_resources
                 }
@@ -244,10 +245,10 @@ class ScaffoldOrchestrator:
                 
             with open(os.path.join(gpu_path, "kustomization.yaml"), "w") as f:
                 gpu_kust = {
-                    "namespace": f"halo-{tenant_acronym}",
+                    "namespace": tenant_namespace,
                     "commonAnnotations": {
                         "halo/target-cluster": gpu_cluster_name,
-                        "halo/source-file": f"deployment/tenants/{region}/halo-{tenant_acronym}/gpu/kustomization.yaml"
+                        "halo/source-file": f"deployment/tenants/{region}/{tenant_namespace}/gpu/kustomization.yaml"
                     },
                     "bases": gpu_resources
                 }
@@ -265,11 +266,11 @@ class ScaffoldOrchestrator:
         with open(os.path.join(tenant_path, "kustomization.yaml"), "w") as f:
             yaml.dump({"resources": tenant_root_resources}, f, default_flow_style=False)
             
-        logger.info(f"Successfully scaffolded {tenant_acronym} to {tenant_path}")
-        yield f"Successfully scaffolded {tenant_acronym} to {tenant_path}"
+        logger.info(f"Successfully scaffolded {tenant} to {tenant_path}")
+        yield f"Successfully scaffolded {tenant} to {tenant_path}"
         yield f"__DONE__:{tenant_path}"
 
-    def _provision_cmu_secrets_sync(self, tenant_acronym, tenant_name, image_selections):
+    def _provision_cmu_secrets_sync(self, tenant, env, tenant_namespace, tenant_name, image_selections):
         msg = "Connecting to Configuration Management Utility (CMU) via gRPC..."
         logger.info(msg)
         yield msg
@@ -288,10 +289,11 @@ class ScaffoldOrchestrator:
             with open(schema_path, 'r') as f:
                 schema_data = yaml.safe_load(f) or {}
                 
+            vp = f"{tenant}-{env}" if env else tenant
             for var in schema_data.get('variables', []):
                 resolution = var.get('resolution')
                 if resolution == 'cmu_generate':
-                    fmt = var.get('format', '').replace('{tenant_acronym}', tenant_acronym)
+                    fmt = var.get('format', '').replace('{tenant_acronym}', vp)
                     if var.get('cmu_type') == 'oidc_client_id':
                         if fmt in provisioned_paths:
                             continue
@@ -301,15 +303,28 @@ class ScaffoldOrchestrator:
                         logger.info(msg)
                         yield msg
                         
+                        app_name = f"halo-{tenant}"
+                        
+                        description_str = f"Halo {tenant.upper()} {env.capitalize() if env else ''}".strip()
                         ident_resp = cmu_connector.create_identity(
-                            client_id=fmt, 
-                            description=f"Halo ({tenant_acronym}) - {tenant_name}"
+                            app_name=app_name,
+                            environment=env,
+                            requestor="HAU",
+                            description=description_str
                         )
                         if not ident_resp.get('success'):
                             raise Exception(f"Failed to create OIDC client in CMU: {ident_resp.get('error_message')}")
 
                 elif resolution == 'hau_generate':
-                    vault_path = var.get('vault_path', '').replace('{tenant_acronym}', tenant_acronym)
+                    vault_path_template = var.get('vault_path', '')
+                    if '{tenant_acronym}' in vault_path_template:
+                        # Fallback just in case, but usually we map to the exact namespace or the new vault structure
+                        # The plan specifies: f"halo/{req.tenant}-{req.env}" if req.env else f"halo/{req.tenant}"
+                        vp = f"{tenant}-{env}" if env else tenant
+                        vault_path = vault_path_template.replace('{tenant_acronym}', vp)
+                    else:
+                        vault_path = vault_path_template
+                        
                     if vault_path in provisioned_paths:
                         continue
                     provisioned_paths.add(vault_path)
@@ -332,6 +347,6 @@ class ScaffoldOrchestrator:
                         if not vault_resp.get('success'):
                             raise Exception(f"Failed to write internal secret to Vault via CMU: {vault_resp.get('error_message')}")
                             
-        msg = f"CMU successfully provisioned and vaulted secrets for tenant {tenant_acronym}"
+        msg = f"CMU successfully provisioned and vaulted secrets for tenant {tenant_namespace}"
         logger.info(msg)
         yield msg

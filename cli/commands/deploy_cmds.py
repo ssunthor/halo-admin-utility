@@ -7,17 +7,20 @@ def deploy_cli():
     pass
 
 @deploy_cli.command(name='scaffold')
-@click.option('--tenant', required=True, help="Tenant acronym (e.g. gtt3d0)")
+@click.option('--tenant', required=True, help="Tenant acronym (e.g. gtt)")
+@click.option('--env', required=False, help="Environment (e.g. test, prod)")
 @click.option('--region', required=True, help="Deployment region (e.g. slo)")
 @click.option('--component', multiple=True, help="Component and image tag selection in format component:tag (e.g. backend:feat-fortinet).")
 @click.option('--internal', is_flag=True, help="Flag this deployment as an internal tenant")
 @click.option('--netbox-slug', default="", help="Optional specific Netbox tenant slug/ID to map to (defaults to gtt-corp for internals, or tenant acronym for customers)")
 @handle_grpc_errors
 @click.pass_context
-def deploy_scaffold(ctx, tenant, region, component, internal, netbox_slug):
+def deploy_scaffold(ctx, tenant, env, region, component, internal, netbox_slug):
     """Scaffolds a new tenant using GitOps automation and synchronously generates CMU secrets."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
+    
+    tenant_acronym = f"{tenant}-{env}" if env else tenant
     
     image_selections = {}
     for comp in component:
@@ -29,7 +32,8 @@ def deploy_scaffold(ctx, tenant, region, component, internal, netbox_slug):
             return
             
     req = hau_pb2.DeployTenantScaffoldRequest(
-        tenant_acronym=tenant,
+        tenant=tenant,
+        env=env if env else "",
         region=region,
         target_cluster="",
         image_selections=image_selections,
@@ -38,7 +42,7 @@ def deploy_scaffold(ctx, tenant, region, component, internal, netbox_slug):
         netbox_slug=netbox_slug
     )
     
-    click.echo(f"Initiating GitOps scaffold for {tenant} in {region}...")
+    click.echo(f"Initiating GitOps scaffold for {tenant_acronym} in {region}...")
     responses = stub.DeployTenantScaffold(req)
     
     final_success = False

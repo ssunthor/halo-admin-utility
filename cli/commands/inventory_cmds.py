@@ -37,11 +37,13 @@ def sync_inventory(ctx, as_grpc):
         click.echo(f"❌ Failed: {resp.message}")
 
 @inventory_cli.command(name='list')
-@click.option('--tenant', help='Filter by tenant slug name (e.g. halo-cid)')
+@click.option('--tenant', help='Filter by tenant acronym (e.g. gtt)')
+@click.option('--env', help='Filter by environment (e.g. test)')
+@click.option('--namespace', help='Filter by exact namespace (e.g. halo-gtt-test)')
 @click.option('--grpc', 'as_grpc', is_flag=True, help="Output raw gRPC response as JSON")
 @click.pass_context
 @handle_grpc_errors
-def list_inventory(ctx, tenant, as_grpc):
+def list_inventory(ctx, tenant, env, namespace, as_grpc):
     """List the current HALO inventory."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
@@ -49,7 +51,11 @@ def list_inventory(ctx, tenant, as_grpc):
         click.echo("[FATAL] Could not connect to gRPC server.")
         return
         
-    req = hau_pb2.InventoryListRequest(tenant_slug=tenant or "")
+    req = hau_pb2.InventoryListRequest(
+        tenant=tenant or "",
+        env=env or "",
+        tenant_namespace=namespace or ""
+    )
     resp = stub.InventoryList(req)
     
     if as_grpc:
@@ -113,7 +119,9 @@ def delete_orphaned(ctx, as_grpc):
         sys.exit(1)
 
 @inventory_cli.command(name='update-customization')
-@click.argument('tenant_slug')
+@click.option('--tenant', help='Tenant acronym (e.g. gtt)')
+@click.option('--env', help='Environment (e.g. test)')
+@click.option('--namespace', help='Exact namespace (e.g. halo-gtt-test)')
 @click.option('--category', help='Tenant category (e.g. INTERNAL, CUSTOMER)')
 @click.option('--tier', help='Tenant tier (e.g. SANDBOX, PRODUCTION)')
 @click.option('--policy', help='Update policy (e.g. MANUAL_ONLY)')
@@ -123,7 +131,7 @@ def delete_orphaned(ctx, as_grpc):
 @click.option('--config-payload', help='JSON string for configuration payload')
 @click.pass_context
 @handle_grpc_errors
-def update_customization(ctx, tenant_slug, category, tier, policy, owner, purpose, maintenance_window, config_payload):
+def update_customization(ctx, tenant, env, namespace, category, tier, policy, owner, purpose, maintenance_window, config_payload):
     """Manually update a tenant's customization fields."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
@@ -132,7 +140,9 @@ def update_customization(ctx, tenant_slug, category, tier, policy, owner, purpos
         return
         
     req = hau_pb2.UpdateTenantCustomizationRequest(
-        tenant_slug=tenant_slug,
+        tenant=tenant or "",
+        env=env or "",
+        tenant_namespace=namespace or "",
         tenant_category=category or "",
         tenant_tier=tier or "",
         update_policy=policy or "",

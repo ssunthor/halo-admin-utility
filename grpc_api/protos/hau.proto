@@ -29,6 +29,7 @@ service HauService {
   rpc DeployTenantScaffold(DeployTenantScaffoldRequest) returns (stream DeployTenantScaffoldResponse);
   rpc DecommissionTenant(DecommissionTenantRequest) returns (stream DecommissionTenantResponse);
   rpc GetBaseSchema(GetBaseSchemaRequest) returns (GetBaseSchemaResponse);
+  rpc TenantList(TenantListRequest) returns (TenantListResponse);
 }
 
 message InventorySyncRequest {}
@@ -39,7 +40,9 @@ message InventorySyncResponse {
 }
 
 message InventoryListRequest {
-  string tenant_slug = 1;
+  string tenant_namespace = 1;
+  string tenant = 2;
+  string env = 3;
 }
 
 message InventoryListResponse {
@@ -56,7 +59,9 @@ message InventoryDeleteOrphanedResponse {
 }
 
 message UpdateTenantCustomizationRequest {
-  string tenant_slug = 1;
+  string tenant_namespace = 1;
+  string tenant = 9;
+  string env = 10;
   string tenant_category = 2;
   string tenant_tier = 3;
   string update_policy = 4;
@@ -301,7 +306,9 @@ message UpsertFeatureResponse {
 }
 
 message NetboxAuditTenantRequest {
-  string tenant_slug = 1;
+  string tenant_namespace = 1;
+  string tenant = 3;
+  string env = 4;
   bool ip_audit = 2;
 }
 
@@ -312,13 +319,14 @@ message NetboxAuditTenantResponse {
 }
 
 message DeployTenantScaffoldRequest {
-  string tenant_acronym = 1;
+  string tenant = 1;
   string region = 2;
   string target_cluster = 3;
   map<string, string> image_selections = 4;
   map<string, string> variables = 5;
   bool is_internal = 6;
   string netbox_slug = 7;
+  string env = 8;
 }
 
 message DeployTenantScaffoldResponse {
@@ -327,8 +335,9 @@ message DeployTenantScaffoldResponse {
 }
 
 message DecommissionTenantRequest {
-  string tenant_acronym = 1;
+  string tenant = 1;
   string region = 2;
+  string env = 3;
 }
 
 message DecommissionTenantResponse {
@@ -344,4 +353,41 @@ message GetBaseSchemaResponse {
   bool success = 1;
   string message = 2;
   string schema_yaml = 3;
+}
+
+message TenantListRequest {
+  string tenant = 1;
+  string env = 2;
+  string tenant_namespace = 3;
+}
+
+message TenantInfo {
+  string id = 13;
+  string tenant_namespace = 1;
+  string tenant_acronym = 2;
+  string tenant_environment = 3;
+  string target_cluster = 4;
+  string netbox_slug = 5;
+  string tenant_category = 6;
+  string tenant_tier = 7;
+  string update_policy = 8;
+  string owner = 9;
+  string purpose = 10;
+  string maintenance_window = 11;
+  string url = 12;
+  string cmd_tenant_id = 14;
+  string cmd_group_id = 15;
+  int32 netbox_id = 16;
+  string tenant_name = 17;
+  string tenant_group = 18;
+  string halo_version = 19;
+  string lifecycle_state = 20;
+  string created_at = 21;
+  string updated_at = 22;
+}
+
+message TenantListResponse {
+  bool success = 1;
+  string message = 2;
+  repeated TenantInfo tenants = 3;
 }

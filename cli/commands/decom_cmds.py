@@ -7,18 +7,21 @@ def decom_cli():
     pass
 
 @decom_cli.command(name='tenant')
-@click.option('--tenant', required=True, help="Tenant acronym (e.g. gtt-test)")
+@click.option('--tenant', required=True, help="Tenant acronym (e.g. gtt)")
+@click.option('--env', required=False, help="Environment (e.g. test, prod)")
 @click.option('--region', required=True, help="Deployment region (e.g. slo)")
 @handle_grpc_errors
 @click.pass_context
-def decom_tenant(ctx, tenant, region):
+def decom_tenant(ctx, tenant, env, region):
     """Decommissions a tenant and cleans up its GitOps files and CMU resources."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
     
-    click.echo(f"Initiating decommission for {tenant} in {region}...")
+    tenant_acronym = f"{tenant}-{env}" if env else tenant
+    click.echo(f"Initiating decommission for {tenant_acronym} in {region}...")
     req = hau_pb2.DecommissionTenantRequest(
-        tenant_acronym=tenant,
+        tenant=tenant,
+        env=env if env else "",
         region=region
     )
     

@@ -51,7 +51,7 @@ external_services:
     type: "rest_api"
     url: "https://gitlab.gt-t.net"
     bot_username: "gia-ai"
-    bot_token: "glpat-5hh1RgoaFNjYUWqeoaRto286MQp1OmQ1CA.01.0y0u9a018"
+    bot_token: "glpat-k93KQgH9FdQTwDiYx9SKkW86MQp1OmRyCA.01.0y121c5gf"
     project_path: "ai/halo"
     local_clone_path: "/ai/utilities/halo_admin_utility/cache/halo"
   netbox:
@@ -64,22 +64,19 @@ external_services:
 rancher_clusters:
   prg:
     url: "https://prg-aif-rancher.prg.gt-t.net"
-    cluster_name: "prg-aif-clu01"
     halo_cluster_name: "prg-hal-clu01"
     gpu_cluster_name: "prg-aif-nvclu01"
   slo:
     url: "https://slo-aif-rancher.slo.gt-t.net"
-    cluster_name: "slo-aif-clu01"
     halo_cluster_name: "slo-hal-clu01"
     gpu_cluster_name: "slo-aif-nvclu01"
   nyc:
     url: "https://nyc-aif-rancher.nyh.gt-t.net"
-    cluster_name: "nyc-aif-clu01"
     halo_cluster_name: "nyc-hal-clu01"
     gpu_cluster_name: "nyc-aif-nvclu01"
 
 vault_paths:
-  rancher_system: "rancher/system/gia_ai"
+  rancher_admin: "rancher/{loc}/system/gia_ai"
 
 auth:
   auth_url: "https://keycloak-aif.gt-t.net/realms/aif-llm/protocol/openid-connect/token"

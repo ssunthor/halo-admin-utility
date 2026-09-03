@@ -13,21 +13,22 @@ class DecommissionOrchestrator:
         self.sql_writer = sql_writer
         cmu_connector.init_cmu_connector(self.config)
 
-    def decommission_tenant(self, tenant_acronym: str, region: str):
-        msg = f"Starting decommissioning for tenant {tenant_acronym} in {region}"
+    def decommission_tenant(self, tenant: str, env: str, region: str):
+        tenant_namespace = f"halo-{tenant}-{env}" if env else f"halo-{tenant}"
+        msg = f"Starting decommissioning for tenant {tenant_namespace} in {region}"
         logger.info(msg)
         yield msg
         
         session = self.sql_writer.session
-        tenant = session.query(HaloTenant).filter_by(tenant_acronym=tenant_acronym).first()
+        db_tenant = session.query(HaloTenant).filter_by(tenant_namespace=tenant_namespace).first()
         
-        if not tenant:
-            msg = f"Tenant {tenant_acronym} not found in DB. Proceeding with cleanup of external resources anyway."
+        if not db_tenant:
+            msg = f"Tenant {tenant_namespace} not found in DB. Proceeding with cleanup of external resources anyway."
             logger.warning(msg)
             yield msg
         
         # 1. Cleanup CMU (Keycloak Identity & Vault Secrets)
-        client_id = f"halo-{tenant_acronym}"
+        client_id = f"halo-{tenant}"
         msg = f"Deleting Keycloak identity {client_id} via CMU..."
         logger.info(msg)
         yield msg
@@ -42,7 +43,7 @@ class DecommissionOrchestrator:
             logger.info(msg)
             yield msg
 
-        vault_path = f"halo/{tenant_acronym}"
+        vault_path = f"halo/{tenant}-{env}" if env else f"halo/{tenant}"
         msg = f"Deleting Vault secrets at {vault_path} via CMU..."
         logger.info(msg)
         yield msg
@@ -59,7 +60,7 @@ class DecommissionOrchestrator:
 
         # 2. Local File System Cleanup
         repo_path = self.config.get('git_workspace', '/ai/utilities/halo_admin_utility/cache/halo/deployment')
-        tenant_path = os.path.join(repo_path, 'tenants', region, f"halo-{tenant_acronym}")
+        tenant_path = os.path.join(repo_path, 'tenants', region, tenant_namespace)
         
         if os.path.exists(tenant_path):
             msg = f"Removing GitOps directory {tenant_path}..."
@@ -80,14 +81,14 @@ class DecommissionOrchestrator:
             yield msg
 
         # 3. Database Teardown
-        if tenant:
-            msg = f"Deleting tenant {tenant_acronym} from DB..."
+        if db_tenant:
+            msg = f"Deleting tenant {tenant_namespace} from DB..."
             logger.info(msg)
             yield msg
             try:
-                session.delete(tenant)
+                session.delete(db_tenant)
                 session.commit()
-                msg = f"Successfully removed tenant {tenant_acronym} from DB."
+                msg = f"Successfully removed tenant {tenant_namespace} from DB."
                 logger.info(msg)
                 yield msg
             except Exception as e:

@@ -32,12 +32,13 @@ class KubeManager:
             return False
             
         try:
-            path = self.config_ref.get('vault_paths', {}).get('rancher_system')
-            if not path:
+            path_template = self.config_ref.get('vault_paths', {}).get('rancher_admin')
+            if not path_template:
                 return False
                 
             logger.info("Fetching fresh Rancher tokens from Vault...")
-            clusters = self.vault_client.get_rancher_tokens(path=path)
+            locations = self.config_ref.get('rancher_clusters', {}).keys()
+            clusters = self.vault_client.get_rancher_tokens(path_template=path_template, locations=locations)
             if clusters:
                 for region, data in clusters.items():
                     if region in self.config_ref.get('rancher_clusters', {}):

@@ -12,24 +12,30 @@ def netbox_cli():
     pass
 
 @netbox_cli.command(name='audit-tenant')
-@click.argument('tenant_slug')
+@click.option('--tenant', help='Tenant acronym (e.g. gtt)')
+@click.option('--env', help='Environment (e.g. test)')
+@click.option('--namespace', help='Exact namespace (e.g. halo-gtt-test)')
 @click.option('--grpc', 'as_grpc', is_flag=True, help="Output raw gRPC response as JSON")
 @click.option('--ip-audit', is_flag=True, help="Perform a deep scan of all interfaces to find missing IPs.")
 @click.pass_context
 @handle_grpc_errors
-def audit_tenant(ctx, tenant_slug, as_grpc, ip_audit):
+def audit_tenant(ctx, tenant, env, namespace, as_grpc, ip_audit):
     """Audit a Netbox tenant for missing slids and IPs."""
-    tenant_slug = tenant_slug.lower()
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
     if not stub:
         click.echo("[FATAL] Could not connect to gRPC server.")
         return
         
-    click.echo(f"Triggering Netbox audit for tenant '{tenant_slug}' via gRPC...")
+    click.echo("Triggering Netbox audit via gRPC...")
     if ip_audit:
         click.echo("Running deep interface IP audit (this may take a bit longer)...")
-    req = hau_pb2.NetboxAuditTenantRequest(tenant_slug=tenant_slug, ip_audit=ip_audit)
+    req = hau_pb2.NetboxAuditTenantRequest(
+        tenant=tenant or "",
+        env=env or "",
+        tenant_namespace=namespace or "",
+        ip_audit=ip_audit
+    )
     resp = stub.NetboxAuditTenant(req)
     
     if as_grpc:

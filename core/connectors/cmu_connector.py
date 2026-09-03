@@ -54,19 +54,28 @@ def init_cmu_connector(config: Dict[str, Any]):
         _channel = None
         _stub = None
 
-def create_identity(client_id: str, description: str = "") -> Dict[str, Any]:
+def create_identity(app_name: str, environment: str, description: str = "", requestor: str = "HAU") -> Dict[str, Any]:
     if not _stub:
         logger.warning("CMU connector not initialized. Cannot create identity.")
         return {"success": False, "error_message": "Connector not initialized"}
         
     try:
-        request = _cmu_pb2.IdentityCreateRequest(client_id=client_id, description=description)
-        response = _stub.IdentityCreate(request, timeout=30, metadata=(('x-client-id', 'HAU'),))
+        request = _cmu_pb2.IdentityCreateRequest(
+            app_name=app_name, 
+            environment=environment, 
+            description=description, 
+            requestor=requestor
+        )
+        response = _stub.IdentityCreate(request, timeout=60, metadata=(('x-client-id', 'HAU'),))
         
         if response.success:
             return {"success": True, "result_json": response.result_json}
         else:
             return {"success": False, "error_message": getattr(response, 'message', 'Unknown Error')}
+    except grpc.RpcError as e:
+        err_msg = f"gRPC Error: {e.code().name} - {e.details()}"
+        logger.error(f"gRPC Error calling CMU IdentityCreate: {err_msg}")
+        return {"success": False, "error_message": err_msg}
     except Exception as e:
         logger.error(f"Error calling CMU IdentityCreate: {e}", exc_info=True)
         return {"success": False, "error_message": str(e)}
@@ -84,6 +93,10 @@ def write_to_vault(path: str, kv_pairs: Dict[str, str]) -> Dict[str, Any]:
             return {"success": True, "message": getattr(response, 'message', 'Success')}
         else:
             return {"success": False, "error_message": getattr(response, 'message', 'Unknown Error')}
+    except grpc.RpcError as e:
+        err_msg = f"gRPC Error: {e.code().name} - {e.details()}"
+        logger.error(f"gRPC Error calling CMU VaultWrite: {err_msg}")
+        return {"success": False, "error_message": err_msg}
     except Exception as e:
         logger.error(f"Error calling CMU VaultWrite: {e}", exc_info=True)
         return {"success": False, "error_message": str(e)}
@@ -95,12 +108,16 @@ def delete_identity(client_id: str) -> Dict[str, Any]:
         
     try:
         request = _cmu_pb2.IdentityDeleteRequest(client_id=client_id)
-        response = _stub.IdentityDelete(request, timeout=30, metadata=(('x-client-id', 'HAU'),))
+        response = _stub.IdentityDelete(request, timeout=60, metadata=(('x-client-id', 'HAU'),))
         
         if response.success:
             return {"success": True, "message": getattr(response, 'message', 'Success')}
         else:
             return {"success": False, "error_message": getattr(response, 'message', 'Unknown Error')}
+    except grpc.RpcError as e:
+        err_msg = f"gRPC Error: {e.code().name} - {e.details()}"
+        logger.error(f"gRPC Error calling CMU IdentityDelete: {err_msg}")
+        return {"success": False, "error_message": err_msg}
     except Exception as e:
         logger.error(f"Error calling CMU IdentityDelete: {e}", exc_info=True)
         return {"success": False, "error_message": str(e)}
@@ -112,12 +129,16 @@ def delete_from_vault(path: str, key: str = "") -> Dict[str, Any]:
         
     try:
         request = _cmu_pb2.VaultDeleteRequest(path=path, key=key)
-        response = _stub.VaultDelete(request, timeout=30, metadata=(('x-client-id', 'HAU'),))
+        response = _stub.VaultDelete(request, timeout=60, metadata=(('x-client-id', 'HAU'),))
         
         if response.success:
             return {"success": True, "message": getattr(response, 'message', 'Success')}
         else:
             return {"success": False, "error_message": getattr(response, 'message', 'Unknown Error')}
+    except grpc.RpcError as e:
+        err_msg = f"gRPC Error: {e.code().name} - {e.details()}"
+        logger.error(f"gRPC Error calling CMU VaultDelete: {err_msg}")
+        return {"success": False, "error_message": err_msg}
     except Exception as e:
         logger.error(f"Error calling CMU VaultDelete: {e}", exc_info=True)
         return {"success": False, "error_message": str(e)}

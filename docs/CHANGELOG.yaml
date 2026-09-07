@@ -15,7 +15,7 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
-- version: 0.2.00
+- version: 0.2.0
   date: "2026-09-03"
   author: "Martin Kecka"
   changes:

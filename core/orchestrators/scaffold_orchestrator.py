@@ -303,12 +303,10 @@ class ScaffoldOrchestrator:
                         logger.info(msg)
                         yield msg
                         
-                        app_name = f"halo-{tenant}"
-                        
                         description_str = f"Halo {tenant.upper()} {env.capitalize() if env else ''}".strip()
                         ident_resp = cmu_connector.create_identity(
-                            app_name=app_name,
-                            environment=env,
+                            client_id=fmt,
+                            environment=env or "",
                             requestor="HAU",
                             description=description_str
                         )

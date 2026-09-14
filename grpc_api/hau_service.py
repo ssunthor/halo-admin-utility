@@ -437,26 +437,49 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             logger.error(f"[GitAudit] Failed to fetch audit logs: {e}")
             return hau_pb2.GitAuditResponse(success=False, message=str(e))
 
-    @handle_rpc(hau_pb2.GitInventorySyncResponse)
+    # Notice: Removing @handle_rpc because this is now a streaming RPC
     def GitInventorySync(self, request, context):
         from core.managers.git_inventory_manager import GitInventoryManager
         inventory_manager = GitInventoryManager(self.config)
         
         if not inventory_manager.url or not inventory_manager.token:
-            return hau_pb2.GitInventorySyncResponse(success=False, message="GitLab configuration is missing.")
+            yield hau_pb2.GitInventorySyncResponse(success=False, message="GitLab configuration is missing.")
+            return
             
-        try:
-            with self._get_db_session(write=True) as session:
-                if not session:
-                    return hau_pb2.GitInventorySyncResponse(success=False, message="Database not available.")
-                reader = SQLReader(session)
-                writer = SQLWriter(session)
-                inventory_manager.sync_database_inventory(reader, writer, request.project_name)
+        import queue
+        import threading
+        q = queue.Queue()
+        
+        def cb(msg):
+            q.put(msg)
+            
+        def run_sync():
+            try:
+                with self._get_db_session(write=True) as session:
+                    if not session:
+                        q.put(Exception("Database not available."))
+                        return
+                    reader = SQLReader(session)
+                    writer = SQLWriter(session)
+                    inventory_manager.sync_database_inventory(reader, writer, request.project_name, progress_cb=cb)
+                q.put(True)
+            except Exception as e:
+                logger.error(f"[GitInventorySync] Failed: {e}")
+                q.put(e)
                 
-            return hau_pb2.GitInventorySyncResponse(success=True, message="Successfully synced Git Inventory to DB.")
-        except Exception as e:
-            logger.error(f"[GitInventorySync] Failed: {e}")
-            return hau_pb2.GitInventorySyncResponse(success=False, message=str(e))
+        t = threading.Thread(target=run_sync)
+        t.start()
+        
+        while True:
+            item = q.get()
+            if item is True:
+                yield hau_pb2.GitInventorySyncResponse(success=True, message="Successfully synced Git Inventory to DB.")
+                break
+            elif isinstance(item, Exception):
+                yield hau_pb2.GitInventorySyncResponse(success=False, message=str(item))
+                break
+            else:
+                yield hau_pb2.GitInventorySyncResponse(success=True, message=str(item))
 
     @handle_rpc(hau_pb2.GitInventoryResponse)
     def GitInventory(self, request, context):
@@ -560,6 +583,53 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             success, message = orchestrator.run_delete(project_name, branch_name, container_tag, actor_name, sql_reader, sql_writer)
             
             return hau_pb2.GitDeleteResponse(success=success, message=message)
+
+    def GitCleanup(self, request, context):
+        if not self.gitlab_manager:
+            yield hau_pb2.GitCleanupResponse(success=False, message="GitlabManager is not initialized.")
+            return
+            
+        import queue
+        import threading
+        q = queue.Queue()
+        
+        def cb(msg):
+            q.put(msg)
+            
+        def run_cleanup():
+            try:
+                with self._get_db_session(write=True) as session:
+                    if not session:
+                        q.put(Exception("Database not available."))
+                        return
+                    
+                    from core.orchestrators.delete_orchestrator import DeleteOrchestrator
+                    from core.managers.container_registry_manager import ContainerRegistryManager
+                    registry_manager = ContainerRegistryManager(self.config)
+                    sql_reader = SQLReader(session)
+                    sql_writer = SQLWriter(session)
+                    
+                    orchestrator = DeleteOrchestrator(self.config, self.gitlab_manager, registry_manager, self.vault_client)
+                    orchestrator.run_cleanup(request.project_name, request.execute, sql_reader, sql_writer, cb)
+                    
+                q.put(True)
+            except Exception as e:
+                logger.error(f"[GitCleanup] Failed: {e}", exc_info=True)
+                q.put(e)
+                
+        t = threading.Thread(target=run_cleanup)
+        t.start()
+        
+        while True:
+            item = q.get()
+            if item is True:
+                yield hau_pb2.GitCleanupResponse(success=True, message="Cleanup completed successfully.")
+                break
+            elif isinstance(item, Exception):
+                yield hau_pb2.GitCleanupResponse(success=False, message=str(item))
+                break
+            else:
+                yield hau_pb2.GitCleanupResponse(success=True, message=str(item))
 
     @handle_rpc(hau_pb2.ListFeaturesResponse)
     def ListFeatures(self, request, context):

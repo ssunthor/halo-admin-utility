@@ -20,9 +20,10 @@ service HauService {
   rpc GetChangelog(GetChangelogRequest) returns (GetChangelogResponse);
   rpc GetDocumentation(GetDocumentationRequest) returns (GetDocumentationResponse);
   rpc GetHaloDocumentationTree(GetHaloDocumentationTreeRequest) returns (GetHaloDocumentationTreeResponse);
-  rpc GitInventorySync(GitInventorySyncRequest) returns (GitInventorySyncResponse);
+  rpc GitInventorySync(GitInventorySyncRequest) returns (stream GitInventorySyncResponse);
   rpc UpdateTenantCustomization(UpdateTenantCustomizationRequest) returns (UpdateTenantCustomizationResponse);
   rpc GitDelete(GitDeleteRequest) returns (GitDeleteResponse);
+  rpc GitCleanup(GitCleanupRequest) returns (stream GitCleanupResponse);
   rpc ListFeatures(ListFeaturesRequest) returns (ListFeaturesResponse);
   rpc UpsertFeature(UpsertFeatureRequest) returns (UpsertFeatureResponse);
   rpc NetboxAuditTenant(NetboxAuditTenantRequest) returns (NetboxAuditTenantResponse);
@@ -262,6 +263,16 @@ message GitDeleteRequest {
 }
 
 message GitDeleteResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GitCleanupRequest {
+  string project_name = 1;
+  bool execute = 2;
+}
+
+message GitCleanupResponse {
   bool success = 1;
   string message = 2;
 }

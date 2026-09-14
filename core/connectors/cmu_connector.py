@@ -54,14 +54,14 @@ def init_cmu_connector(config: Dict[str, Any]):
         _channel = None
         _stub = None
 
-def create_identity(app_name: str, environment: str, description: str = "", requestor: str = "HAU") -> Dict[str, Any]:
+def create_identity(client_id: str, environment: str, description: str = "", requestor: str = "HAU") -> Dict[str, Any]:
     if not _stub:
         logger.warning("CMU connector not initialized. Cannot create identity.")
         return {"success": False, "error_message": "Connector not initialized"}
         
     try:
         request = _cmu_pb2.IdentityCreateRequest(
-            app_name=app_name, 
+            client_id=client_id, 
             environment=environment, 
             description=description, 
             requestor=requestor

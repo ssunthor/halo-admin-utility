@@ -15,6 +15,16 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.2.1
+  date: "2026-09-14"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '✨ New Features & Enhancements'
+      'items':
+      - 'Updated `GitInventoryManager` to fetch the real container image `created_at` timestamp directly from the Docker Registry V2 API config blob, bypassing the inaccurate GitLab REST API timestamp.'
+      - 'Refactored the `GitInventorySync` gRPC endpoint to stream real-time progress logs to the CLI output, improving visibility during the synchronization process.'
+      - 'Implemented `hau git cleanup` CLI command and `GitCleanup` gRPC endpoint to automatically identify and safely delete orphaned branches and containers that have been merged to dev/main or other features, verifying timestamps to prevent deleting active work.'
+
 - version: 0.2.0
   date: "2026-09-03"
   author: "Martin Kecka"

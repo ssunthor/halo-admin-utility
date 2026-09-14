@@ -116,3 +116,158 @@ class DeleteOrchestrator:
                 final_msg += f"\nInventory Sync Warning: {e}"
 
         return overall_success, final_msg
+
+    def run_cleanup(self, project_name: str, execute: bool, sql_reader: SQLReader, sql_writer: SQLWriter, progress_cb) -> None:
+        def log_and_cb(msg):
+            logger.info(msg)
+            if progress_cb:
+                progress_cb(msg)
+
+        log_and_cb("Starting Git Cleanup automation...")
+        log_and_cb(f"Syncing Git Inventory for '{project_name or 'all projects'}' to ensure fresh data...")
+        try:
+            self.inventory_manager.sync_database_inventory(sql_reader, sql_writer, project_name, progress_cb=progress_cb)
+        except Exception as e:
+            log_and_cb(f" ⚠️ Warning: Pre-cleanup Git Inventory sync failed: {e}")
+            
+        log_and_cb("Syncing K8s Inventory to accurately check active deployments...")
+        inv_orchestrator = InventoryOrchestrator(self.config, sql_writer, vault_client=self.vault_client)
+        inv_orchestrator.sync_inventory()
+        
+        log_and_cb("Fetching Git Inventory from database...")
+        projects = sql_reader.get_git_inventory(project_name)
+        if not projects:
+            log_and_cb(f"No projects found for '{project_name}'.")
+            return
+            
+        import gitlab
+        gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
+        active_counts = sql_reader.get_active_deployments_counts()
+        
+        cleanup_performed = False
+        
+        for p in projects:
+            p_name = p.get('name')
+            p_path = p.get('path')
+            log_and_cb(f"\nAnalyzing project: {p_name} ({p_path})")
+            
+            try:
+                gl_project = gl.projects.get(p_path)
+            except Exception as e:
+                log_and_cb(f"Failed to fetch GitLab project {p_path}: {e}")
+                continue
+                
+            items_to_check = []
+            
+            for item in p.get('inventory', {}).get('features', []):
+                items_to_check.append({
+                    'type': 'feature',
+                    'branch': item.get('branch'),
+                    'tag': item.get('container_tag'),
+                    'deployments': item.get('active_deployments', 0),
+                    'timestamp': item.get('branch_last_updated') or item.get('container_created', 'unknown')
+                })
+                
+            for item in p.get('inventory', {}).get('standalone_features', []):
+                items_to_check.append({
+                    'type': 'standalone container',
+                    'branch': None,
+                    'tag': item.get('tag'),
+                    'deployments': item.get('active_deployments', 0),
+                    'timestamp': item.get('created_at', 'unknown')
+                })
+                
+            for item in p.get('inventory', {}).get('active_branches_without_containers', []):
+                items_to_check.append({
+                    'type': 'branch',
+                    'branch': item.get('branch'),
+                    'tag': None,
+                    'deployments': 0,
+                    'timestamp': item.get('last_updated_at', 'unknown')
+                })
+                
+            for item in items_to_check:
+                branch_name = item['branch']
+                tag_name = item['tag']
+                deployments = item['deployments']
+                i_type = item['type']
+                ts = item['timestamp']
+                # Truncate timestamp to just the date (YYYY-MM-DD)
+                short_ts = ts.split('T')[0] if 'T' in ts else ts
+                
+                check_name = branch_name or tag_name
+                if not check_name: continue
+                
+                if deployments > 0:
+                    log_and_cb(f" 🛡️ Skipping {i_type} '{check_name}' (Updated: {short_ts}): Actively deployed ({deployments} deployments).")
+                    continue
+                    
+                # Search MRs
+                mrs = []
+                try:
+                    mrs = gl_project.mergerequests.list(source_branch=check_name, state='merged', get_all=False)
+                    if not mrs and '-' in check_name and not branch_name:
+                        # Try with slash if it's a standalone container tag
+                        alt_name = check_name.replace('-', '/', 1)
+                        mrs = gl_project.mergerequests.list(source_branch=alt_name, state='merged', get_all=False)
+                except Exception as e:
+                    log_and_cb(f" ⚠️ Error checking MRs for {check_name}: {e}")
+                    continue
+                    
+                if not mrs:
+                    log_and_cb(f" 👻 Skipping {i_type} '{check_name}' (Updated: {short_ts}): No merged MR found.")
+                    continue
+                    
+                mr = mrs[0]
+                target_b = mr.target_branch
+                merged_at = mr.merged_at
+                
+                # Check for new commits on the branch after the MR was merged
+                if branch_name:
+                    try:
+                        branch = gl_project.branches.get(branch_name)
+                        last_commit_at = branch.commit['created_at']
+                        if last_commit_at > merged_at:
+                            log_and_cb(f" 👻 Skipping {i_type} '{check_name}' (Updated: {short_ts}): Branch has new commits after it was merged to '{target_b}'.")
+                            continue
+                    except Exception as e:
+                        # If we can't fetch the branch (maybe it was deleted), we assume it's safe if it has an MR
+                        pass
+                        
+                action_str = "Would delete" if not execute else "Deleting"
+                target_desc = []
+                if branch_name: target_desc.append(f"branch '{branch_name}'")
+                if tag_name: target_desc.append(f"container '{tag_name}'")
+                
+                log_and_cb(f" 🗑️ {action_str} {' and '.join(target_desc)} (Merged to {target_b} at {merged_at})")
+                
+                if execute:
+                    overall_success = True
+                    msg = []
+                    if branch_name:
+                        success, m = self.gitlab_manager.delete_branch(p_path, branch_name)
+                        if not success: overall_success = False
+                        msg.append(f"Branch: {m}")
+                    if tag_name:
+                        success, m = self.registry_manager.delete_container_tag(p_path, tag_name)
+                        if not success: overall_success = False
+                        msg.append(f"Container: {m}")
+                        
+                    log = sql_writer.create_git_release_audit_log(
+                        project_name=p_path,
+                        action="DELETE",
+                        actor="GitCleanupAutomation",
+                        status="SUCCESS" if overall_success else "FAILED",
+                        source_branch=branch_name,
+                        version_tag=tag_name
+                    )
+                    if not overall_success:
+                        sql_writer.update_git_release_audit_log(log.id, error_message=" | ".join(msg))
+                        
+                    cleanup_performed = True
+
+        if execute and cleanup_performed:
+            log_and_cb("Syncing Git Inventory post-cleanup...")
+            self.inventory_manager.sync_database_inventory(sql_reader, sql_writer, project_name, progress_cb=progress_cb)
+            
+        log_and_cb("Cleanup completed successfully.")

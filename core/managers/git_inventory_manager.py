@@ -4,6 +4,7 @@ import concurrent.futures
 import gitlab
 import logging
 import urllib3
+from requests.auth import HTTPBasicAuth
 from core.io_handlers.sql_reader import SQLReader
 from core.io_handlers.sql_writer import SQLWriter
 
@@ -21,8 +22,15 @@ class GitInventoryManager:
             self.url = None
             self.token = None
 
-    def sync_database_inventory(self, sql_reader: SQLReader, sql_writer: SQLWriter, project_name: str = None) -> str:
+    def sync_database_inventory(self, sql_reader: SQLReader, sql_writer: SQLWriter, project_name: str = None, progress_cb=None) -> str:
+        def log_and_cb(msg):
+            logger.info(msg)
+            if progress_cb:
+                progress_cb(msg)
+
+        log_and_cb(f"Starting Git Inventory Sync for project: {project_name or 'all'}")
         audit_mapping = {'tags': {}, 'branches': {}}
+        log_and_cb("Fetching ordered git releases from database for audit mapping...")
         logs = sql_reader.get_all_git_releases_ordered()
         for log in logs:
             if log.action == 'DELETE':
@@ -41,15 +49,27 @@ class GitInventoryManager:
                     audit_mapping['branches'][log.project_name][log.source_branch] = log.actor
 
         resolved_project_name = sql_reader.resolve_project_path(project_name) if project_name else None
-        result_json = self.fetch_git_inventory_graphql(project_path=resolved_project_name, audit_mapping=audit_mapping)
+        log_and_cb(f"Resolved project path: {resolved_project_name}. Initiating GitLab data fetch...")
+        result_json = self.fetch_git_inventory_graphql(project_path=resolved_project_name, audit_mapping=audit_mapping, progress_cb=progress_cb)
+        
+        log_and_cb("Parsing fetched GitLab data...")
         data = json.loads(result_json)
+        
+        log_and_cb(f"Upserting {len(data.get('projects', []))} projects into the database...")
         sql_writer.upsert_git_inventory(data)
+        
+        log_and_cb("Database upsert completed.")
         return "Successfully synced Git Inventory to DB."
 
-    def fetch_git_inventory_graphql(self, group_path="ai/halo", project_path=None, audit_mapping=None):
+    def fetch_git_inventory_graphql(self, group_path="ai/halo", project_path=None, audit_mapping=None, progress_cb=None):
         if not self.url or not self.token:
             raise RuntimeError("GitLab config with URL and token is missing.")
             
+        def log_and_cb(msg):
+            logger.info(msg)
+            if progress_cb:
+                progress_cb(msg)
+
         if audit_mapping is None:
             audit_mapping = {'tags': {}, 'branches': {}}
             
@@ -175,7 +195,28 @@ class GitInventoryManager:
                 raise RuntimeError(f"Failed to fetch git inventory for group: {e}")
                 
         projects = all_projects
+        log_and_cb(f"Successfully fetched {len(projects)} projects from GitLab via GraphQL.")
         
+        registry_tokens = {}
+        proj_id_to_path = {}
+        log_and_cb("Fetching Docker Registry JWT tokens for projects...")
+        for p in projects:
+            full_path = p.get('fullPath')
+            p_id = p.get('id', '').split('/')[-1]
+            if full_path:
+                proj_id_to_path[p_id] = full_path
+                auth_url = f"{self.url.rstrip('/')}/jwt/auth?service=container_registry&scope=repository:{full_path}:pull"
+                try:
+                    res_auth = requests.get(auth_url, auth=HTTPBasicAuth('oauth2', self.token), verify=False)
+                    if res_auth.status_code != 200:
+                        res_auth = requests.get(auth_url, headers=headers, verify=False)
+                    if res_auth.status_code == 200:
+                        registry_tokens[full_path] = res_auth.json().get('token')
+                    else:
+                        logger.error(f"Failed to get registry token for {full_path}: {res_auth.status_code} {res_auth.text}")
+                except Exception as e:
+                    logger.error(f"Exception getting registry token for {full_path}: {e}")
+
         def fetch_tag_list(proj_id_num, repo_id_num):
             try:
                 res = requests.get(
@@ -188,14 +229,30 @@ class GitInventoryManager:
                 pass
             return proj_id_num, repo_id_num, []
 
-        def fetch_tag_detail(proj_id_num, repo_id_num, tag_name):
+        def fetch_tag_detail(proj_id_num, repo_id_num, tag_name, full_path, registry_token):
             try:
                 res = requests.get(
                     f"{self.url.rstrip('/')}/api/v4/projects/{proj_id_num}/registry/repositories/{repo_id_num}/tags/{tag_name}",
                     headers=headers, verify=False
                 )
                 if res.status_code == 200:
-                    return res.json()
+                    tag_data = res.json()
+                    revision = tag_data.get('revision')
+                    if revision and registry_token and full_path:
+                        domain = self.url.rstrip('/').replace("https://", "").replace("http://", "")
+                        blob_url = f"https://{domain}:4567/v2/{full_path}/blobs/sha256:{revision}"
+                        blob_headers = {"Authorization": f"Bearer {registry_token}"}
+                        try:
+                            blob_res = requests.get(blob_url, headers=blob_headers, verify=False)
+                            if blob_res.status_code == 200:
+                                blob = blob_res.json()
+                                if blob.get('created'):
+                                    tag_data['created_at'] = blob.get('created')
+                            else:
+                                logger.error(f"Failed to fetch blob for {full_path} {tag_name}: {blob_res.status_code} {blob_res.text}")
+                        except Exception as e:
+                            logger.error(f"Exception fetching blob for {full_path} {tag_name}: {e}")
+                    return tag_data
             except Exception:
                 pass
             return {"name": tag_name}
@@ -211,6 +268,7 @@ class GitInventoryManager:
             
         fetch_tasks = {}
         git_info_tasks = {}
+        log_and_cb("Submitting tasks to fetch basic Git project information (branches, tags) and Container tag lists...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             for p in projects:
                 proj_id = p.get('id', '').split('/')[-1]
@@ -231,6 +289,8 @@ class GitInventoryManager:
                 proj_id, repo_id, tags = future.result()
                 repo_tags[c_id] = (proj_id, repo_id, tags)
         
+        log_and_cb(f"Gathered tags for {len(repo_tags)} container repositories. Submitting detailed tag fetch tasks...")
+        
         detail_tasks = {}
         tag_results = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
@@ -239,12 +299,16 @@ class GitInventoryManager:
                 for t in tags:
                     tag_name = t.get('name')
                     if tag_name:
-                        future = executor.submit(fetch_tag_detail, proj_id, repo_id, tag_name)
+                        full_path = proj_id_to_path.get(proj_id)
+                        registry_token = registry_tokens.get(full_path) if full_path else None
+                        future = executor.submit(fetch_tag_detail, proj_id, repo_id, tag_name, full_path, registry_token)
                         detail_tasks[future] = c_id
                         
             for future in concurrent.futures.as_completed(detail_tasks):
                 c_id = detail_tasks[future]
                 tag_results[c_id].append(future.result())
+        
+        log_and_cb("All tag details fetched successfully. Constructing final inventory payload...")
         
         result = []
         for p in projects:

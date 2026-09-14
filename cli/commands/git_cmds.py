@@ -20,16 +20,31 @@ def git_sync_inventory(ctx, project, as_grpc):
     
     target_str = f" for '{project}'" if project else ""
     click.echo(f"Starting Git Inventory Sync{target_str}. This may take a moment to fetch and upsert...")
-    resp = stub.GitInventorySync(req)
+    responses = stub.GitInventorySync(req)
     
     if as_grpc:
-        print_grpc_json(resp)
+        # For streaming responses, we collect and print
+        for resp in responses:
+            print_grpc_json(resp)
         return
         
-    if not resp.success:
-        click.secho(f"Failed: {resp.message}", fg='red')
+    final_success = True
+    final_message = ""
+    for resp in responses:
+        if "Successfully synced Git Inventory to DB." in resp.message:
+            final_success = resp.success
+            final_message = resp.message
+        elif not resp.success and "Failed:" in resp.message:
+            final_success = resp.success
+            final_message = resp.message
+            click.secho(f"Error: {resp.message}", fg='red')
+        else:
+            click.echo(f" ⏳ {resp.message}")
+            
+    if not final_success:
+        click.secho(f"Failed: {final_message}", fg='red')
     else:
-        click.secho(f"Success: {resp.message}", fg='green', bold=True)
+        click.secho(f"Success: {final_message}", fg='green', bold=True)
 
 @git_cli.command(name='containers')
 @click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
@@ -231,6 +246,56 @@ def git_sync(ctx, target, as_grpc, branch):
         click.secho(f"\n{resp.message}", fg='green')
     else:
         click.secho(f"\n❌ Sync Failed: {resp.message}", fg='red')
+
+@git_cli.command(name='cleanup')
+@click.option('--project', required=True, help="Project name (e.g. ai/halo/backend)")
+@click.option('--execute', is_flag=True, help="Actually perform deletions (defaults to dry-run)")
+@click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
+@handle_grpc_errors
+@click.pass_context
+def git_cleanup(ctx, project, execute, as_grpc):
+    """Automatically cleans up merged standalone containers and branches."""
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    
+    if not execute:
+        click.secho(f"🔍 Running in DRY-RUN mode for '{project}'. No deletions will occur.", fg='cyan', bold=True)
+    else:
+        click.secho(f"⚠️ Running in EXECUTE mode for '{project}'. Proceeding with deletions.", fg='red', bold=True)
+        click.confirm(f"Are you absolutely sure you want to run cleanup?", abort=True)
+        
+    req = hau_pb2.GitCleanupRequest(
+        project_name=project,
+        execute=execute
+    )
+    
+    responses = stub.GitCleanup(req)
+    
+    if as_grpc:
+        for resp in responses:
+            print_grpc_json(resp)
+        return
+        
+    final_success = True
+    final_message = ""
+    for resp in responses:
+        if "Cleanup completed" in resp.message:
+            final_success = resp.success
+            final_message = resp.message
+        elif not resp.success and "Failed:" in resp.message:
+            final_success = resp.success
+            final_message = resp.message
+            click.secho(f"Error: {resp.message}", fg='red')
+        else:
+            click.echo(f" ⏳ {resp.message}")
+            
+    if not final_success:
+        click.secho(f"Failed: {final_message}", fg='red')
+    else:
+        if execute:
+            click.secho(f"Success: {final_message}", fg='green', bold=True)
+        else:
+            click.secho(f"Dry-Run: {final_message}", fg='cyan', bold=True)
 
 @git_cli.command(name='list')
 @click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")

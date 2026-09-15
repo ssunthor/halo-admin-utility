@@ -76,7 +76,10 @@ def backfill_changelog(ctx, project, branch, start_version, start_commit, out):
                     os.makedirs(out_dir, exist_ok=True)
                 with open(out, 'w') as f:
                     f.write(response.changelog_yaml)
-                click.secho(f"\nFinal changelog written to {out}", fg="green")
+                if response.message == "Incremental changelog update.":
+                    click.secho(f"  -> Incremental changelog saved to {out}", fg="cyan")
+                else:
+                    click.secho(f"\nFinal changelog written to {out}", fg="green")
             else:
                 msg = response.message
                 if msg.startswith("\nProcessing Day") or msg.startswith("Processing Day"):
@@ -182,7 +185,10 @@ def sync_changelog(ctx, project, branch, changelog):
                     
                 with open(changelog, 'w') as f:
                     f.write(final_yaml)
-                click.secho(f"\nFinal synced changelog written to {changelog}", fg="green")
+                if response.message == "Incremental changelog update.":
+                    click.secho(f"  -> Incremental changelog saved to {changelog}", fg="cyan")
+                else:
+                    click.secho(f"\nFinal synced changelog written to {changelog}", fg="green")
 
             else:
                 msg = response.message

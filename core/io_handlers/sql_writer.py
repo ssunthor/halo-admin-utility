@@ -241,3 +241,11 @@ class SQLWriter:
                 setattr(log, key, value)
             self.session.commit()
         return log
+
+    def delete_git_audit_log(self, log_id: str):
+        log = self.session.query(GitReleaseAuditLog).filter(GitReleaseAuditLog.id.startswith(log_id)).first()
+        if log:
+            self.session.delete(log)
+            self.session.commit()
+            return True
+        return False

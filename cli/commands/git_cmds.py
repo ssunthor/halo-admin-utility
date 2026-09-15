@@ -473,17 +473,23 @@ def git_retry(ctx, project, pipeline, merge, skip_warnings, debug, author):
 @git_cli.command(name="audit")
 @click.option('--id', type=str, help="ID of the specific audit log to view details")
 @click.option('--project', type=str, help="Filter by project name")
+@click.option('--delete', is_flag=True, help="Delete the specified audit log")
 @click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
 @handle_grpc_errors
 @click.pass_context
-def git_audit(ctx, id, project, as_grpc):
+def git_audit(ctx, id, project, delete, as_grpc):
     """View Git Release orchestration audit logs and telemetry data."""
+    if delete and not id:
+        click.secho("❌ You must specify an --id to delete an audit log.", fg="red")
+        return
+
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
     
     req = hau_pb2.GitAuditRequest(
         id=id or "",
-        project_name=project or ""
+        project_name=project or "",
+        delete=delete
     )
     
     resp = stub.GitAudit(req)
@@ -494,6 +500,10 @@ def git_audit(ctx, id, project, as_grpc):
         
     if not resp.success:
         click.secho(f"❌ {resp.message}", fg="red")
+        return
+        
+    if delete:
+        click.secho(f"✅ {resp.message}", fg="green")
         return
         
     try:

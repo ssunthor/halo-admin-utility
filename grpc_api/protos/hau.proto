@@ -180,6 +180,7 @@ message GitRetryResponse {
 message GitAuditRequest {
   string id = 1;
   string project_name = 2;
+  bool delete = 3;
 }
 
 message GitAuditResponse {

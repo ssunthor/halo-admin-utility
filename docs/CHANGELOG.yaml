@@ -1,11 +1,5 @@
 # ---------------------------------------------------------------------------
-# HALO ADMIN UTILITY (HAU) - CHANGELOG
-#
-# NOTE FOR CONTRIBUTORS:
-# Please add the tag `[NEEDS_DOCS]` to the end of any item
-# that introduces a significant change to logic, architecture, or
-# core functionality. This serves as a reminder to update the
-# main `hau_design.md` document to reflect the change.
+# HALO STANDARD CHANGELOG
 #
 # STANDARD CATEGORIES:
 # - "🚀 Architecture & Infrastructure"
@@ -15,6 +9,17 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+---
+- version: 0.2.2
+  date: "2026-09-15"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '✨ New Features & Enhancements'
+      'items':
+      - 'Added `--delete` flag to the `hau git audit` CLI command and `GitAudit` gRPC endpoint to enable deleting GitReleaseAuditLog records by ID.'
+
+
+
 - version: 0.2.1
   date: "2026-09-14"
   author: "Martin Kecka"
@@ -379,3 +384,4 @@
     - category: "🚀 Architecture & Infrastructure"
       items:
         - "Bootstrapped HALO Admin Utility (HAU) generic scaffolding based on SERA ecosystem standards."
+

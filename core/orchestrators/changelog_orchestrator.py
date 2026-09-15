@@ -297,6 +297,25 @@ class ChangelogOrchestrator:
                     changelog_entries.append(formatted_yaml)
                     yield "Changelog generated successfully."
                     
+                    # Yield incremental YAML so the client can save progress
+                    temp_entries = list(changelog_entries)
+                    temp_entries.reverse()
+                    incremental_doc = "# ---------------------------------------------------------------------------\n"
+                    incremental_doc += "# HALO STANDARD CHANGELOG\n"
+                    incremental_doc += "#\n"
+                    incremental_doc += "# STANDARD CATEGORIES:\n"
+                    incremental_doc += "# - \"🚀 Architecture & Infrastructure\"\n"
+                    incremental_doc += "# - \"✨ New Features & Enhancements\"\n"
+                    incremental_doc += "# - \"🎨 UI / UX Improvements\"\n"
+                    incremental_doc += "# - \"🐛 Bug Fixes & Resilience\"\n"
+                    incremental_doc += "# - \"🔒 Security & Auth\"\n"
+                    incremental_doc += "# - \"🧹 Refactoring & Chores\"\n"
+                    incremental_doc += "# ---------------------------------------------------------------------------\n"
+                    incremental_doc += "---\n"
+                    incremental_doc += "\n\n".join(temp_entries)
+                    
+                    yield {"incremental_yaml": incremental_doc}
+                    
                     current_version = get_next_version(current_version)
             except Exception as e:
                 yield f"Failed to generate changelog for {date_str}: {e}"

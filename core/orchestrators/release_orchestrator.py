@@ -217,7 +217,10 @@ class ReleaseOrchestrator:
             next_patch = next_base.micro + 1
             next_version = f"{next_base.major}.{next_base.minor}.{next_patch}"
             
-        version = next_version
+        if skip_changelog:
+            version = source_version
+        else:
+            version = next_version
         
         def _get_tag(v_str):
             v = str(v_str)
@@ -348,66 +351,65 @@ class ReleaseOrchestrator:
                             yield f"  {item}"
                             
                     if not final_yaml:
-                        yield "No significant features detected by AI. Applying standard bugfix patch bump..."
-                        final_yaml = "- category: '🐛 Bug Fixes & Resilience'\n  items:\n    - 'Minor system updates, refactoring, and targeted bug fixes.'"
-                        
-                    with open(cl_path, 'r') as f:
-                        existing = f.read()
-                    
-                    lines_out = final_yaml.strip().split('\n')
-                    formatted_yaml = ""
-                    for i, line_out in enumerate(lines_out):
-                        if i == 0:
-                            if not line_out.startswith("-"):
-                                formatted_yaml += f"- {line_out}\n"
-                            else:
-                                formatted_yaml += f"{line_out}\n"
-                        else:
-                            formatted_yaml += f"  {line_out}\n"
-                    final_yaml = formatted_yaml
-                        
-                    existing_lines = existing.split('\n')
-                    insert_idx = 0
-                    for idx, line in enumerate(existing_lines):
-                        stripped = line.strip()
-                        if stripped == '' or stripped.startswith('#') or stripped == '---':
-                            insert_idx = idx + 1
-                        else:
-                            break
-                            
-                    new_content = "\n".join(existing_lines[:insert_idx])
-                    if new_content and not new_content.endswith('\n'):
-                        new_content += "\n"
-                    new_content += final_yaml + "\n\n"
-                    new_content += "\n".join(existing_lines[insert_idx:])
-                        
-                    with open(cl_path, 'w') as f:
-                        f.write(new_content)
-                        
-                    parsed_new = None
-                    try:
-                        parsed_new = yaml.safe_load(final_yaml)
-                    except Exception as e:
-                        err_msg = f"Failed to parse newly generated changelog for commit msg: {e}"
-                        logger.error(f"[GitRelease] {err_msg}")
-                        yield {"success": False, "message": err_msg}
-                        return
-
-                    if isinstance(parsed_new, list) and len(parsed_new) > 0:
-                        top_entry_source = parsed_new[0]
+                        yield "No significant features detected by AI. Skipping changelog file update."
                     else:
-                        yield {"success": False, "message": "Generated changelog YAML is empty or malformed."}
-                        return
-
-                    if audit_log and sql_writer:
-                        sql_writer.update_git_release_audit_log(
-                            audit_log.id, 
-                            changelog_generation_method="AUTO_GENERATED_LLM", 
-                            merged_features_json={"raw_yaml": final_yaml},
-                            version_tag=_get_tag(version)
-                        )
+                        with open(cl_path, 'r') as f:
+                            existing = f.read()
                         
-                    yield f"Committing and pushing generated changelog (v{next_version})..."
+                        lines_out = final_yaml.strip().split('\n')
+                        formatted_yaml = ""
+                        for i, line_out in enumerate(lines_out):
+                            if i == 0:
+                                if not line_out.startswith("-"):
+                                    formatted_yaml += f"- {line_out}\n"
+                                else:
+                                    formatted_yaml += f"{line_out}\n"
+                            else:
+                                formatted_yaml += f"  {line_out}\n"
+                        final_yaml = formatted_yaml
+                            
+                        existing_lines = existing.split('\n')
+                        insert_idx = 0
+                        for idx, line in enumerate(existing_lines):
+                            stripped = line.strip()
+                            if stripped == '' or stripped.startswith('#') or stripped == '---':
+                                insert_idx = idx + 1
+                            else:
+                                break
+                                
+                        new_content = "\n".join(existing_lines[:insert_idx])
+                        if new_content and not new_content.endswith('\n'):
+                            new_content += "\n"
+                        new_content += final_yaml + "\n\n"
+                        new_content += "\n".join(existing_lines[insert_idx:])
+                            
+                        with open(cl_path, 'w') as f:
+                            f.write(new_content)
+                            
+                        parsed_new = None
+                        try:
+                            parsed_new = yaml.safe_load(final_yaml)
+                        except Exception as e:
+                            err_msg = f"Failed to parse newly generated changelog for commit msg: {e}"
+                            logger.error(f"[GitRelease] {err_msg}")
+                            yield {"success": False, "message": err_msg}
+                            return
+
+                        if isinstance(parsed_new, list) and len(parsed_new) > 0:
+                            top_entry_source = parsed_new[0]
+                        else:
+                            yield {"success": False, "message": "Generated changelog YAML is empty or malformed."}
+                            return
+
+                        if audit_log and sql_writer:
+                            sql_writer.update_git_release_audit_log(
+                                audit_log.id, 
+                                changelog_generation_method="AUTO_GENERATED_LLM", 
+                                merged_features_json={"raw_yaml": final_yaml},
+                                version_tag=_get_tag(version)
+                            )
+                            
+                        yield f"Committing and pushing generated changelog (v{next_version})..."
                 
                 if not changelog_already_generated:
                     if dry_run:

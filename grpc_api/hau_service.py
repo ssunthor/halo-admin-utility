@@ -339,12 +339,19 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         
         try:
             for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version, start_commit, start_date):
-                if isinstance(item, dict) and "final_yaml" in item:
-                    yield hau_pb2.GitBackfillResponse(
-                        success=True,
-                        message="Backfill complete.",
-                        changelog_yaml=item["final_yaml"]
-                    )
+                if isinstance(item, dict):
+                    if "incremental_yaml" in item:
+                        yield hau_pb2.GitBackfillResponse(
+                            success=True,
+                            message="Incremental changelog update.",
+                            changelog_yaml=item["incremental_yaml"]
+                        )
+                    elif "final_yaml" in item:
+                        yield hau_pb2.GitBackfillResponse(
+                            success=True,
+                            message="Backfill complete.",
+                            changelog_yaml=item["final_yaml"]
+                        )
                 else:
                     yield hau_pb2.GitBackfillResponse(
                         success=True,
@@ -417,10 +424,18 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
     @handle_rpc(hau_pb2.GitAuditResponse)
     def GitAudit(self, request, context):
         try:
-            with self._get_db_session(write=False) as session:
+            with self._get_db_session(write=True) as session:
                 if not session:
                     return hau_pb2.GitAuditResponse(success=False, message="Database not configured")
                     
+                if getattr(request, 'delete', False) and request.id:
+                    writer = SQLWriter(session)
+                    success = writer.delete_git_audit_log(request.id)
+                    if success:
+                        return hau_pb2.GitAuditResponse(success=True, message=f"Deleted audit log {request.id}")
+                    else:
+                        return hau_pb2.GitAuditResponse(success=False, message=f"Audit log {request.id} not found")
+
                 reader = SQLReader(session)
                 result = reader.get_git_audit_logs(
                     limit=50,
@@ -434,7 +449,7 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                     result_json=json.dumps(result)
                 )
         except Exception as e:
-            logger.error(f"[GitAudit] Failed to fetch audit logs: {e}")
+            logger.error(f"[GitAudit] Failed to process audit logs: {e}")
             return hau_pb2.GitAuditResponse(success=False, message=str(e))
 
     # Notice: Removing @handle_rpc because this is now a streaming RPC

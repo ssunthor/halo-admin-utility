@@ -10,6 +10,21 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: 0.2.3
+  date: "2026-09-17"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '✨ New Features & Enhancements'
+      'items':
+      - 'Added `--use-deployment-changelog` parameter to the `git release` CLI command and `GitReleaseRequest` gRPC protocol to conditionally use the changelog from the deployment repository.'
+      - 'Implemented `container_exists` method in `ContainerRegistryManager` to allow fast HTTP `HEAD` checks for container existence in the registry.'
+    - 'category': '🐛 Bug Fixes & Resilience'
+      'items':
+      - 'Fixed `ReleaseOrchestrator` to fallback to `0.1.0` (instead of `0.0.0`) when no existing changelog can be found.'
+      - 'Fixed `release_orchestrator.py` early exit logic to verify if the container tag actually exists in the registry before skipping a release.'
+      - 'Fixed `ReleaseOrchestrator` to skip codebase pushes and `chore/auto-sync` branch creation during `main` branch `release-only` backfills.'
+      - 'Implemented a fail-safe in `ReleaseOrchestrator` to fetch and verify the deployment repository `CHANGELOG.yaml` version before syncing, preventing accidental overwrites of newer deployment histories.'
+
 - version: 0.2.2
   date: "2026-09-15"
   author: "Martin Kecka"
@@ -17,8 +32,6 @@
     - 'category': '✨ New Features & Enhancements'
       'items':
       - 'Added `--delete` flag to the `hau git audit` CLI command and `GitAudit` gRPC endpoint to enable deleting GitReleaseAuditLog records by ID.'
-
-
 
 - version: 0.2.1
   date: "2026-09-14"

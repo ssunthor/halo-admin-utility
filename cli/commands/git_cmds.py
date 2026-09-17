@@ -384,8 +384,11 @@ def git_checkout(ctx, project, branch, as_grpc):
 @click.option('--debug', is_flag=True, help="Stream detailed job trace logs from the pipeline")
 @click.option('--author', type=str, required=True, help="Override author (will resolve to GitLab user)")
 @click.option('--dry-run', is_flag=True, help="Simulate the release process without modifying GitLab or pushing commits.")
+@click.option('--release-only', is_flag=True, help="Run a sync release on the target branch to containerize undocumented commits.")
+@click.option('--skip-rogue-check', is_flag=True, help="Bypass the pre-flight check for undocumented commits on the target branch.")
+@click.option('--use-deployment-changelog', is_flag=True, help="Use the existing changelog from deployment repo instead of generating a new one.")
 @click.pass_context
-def git_release(ctx, project, source, target, skip_changelog, delete_branch, debug, author, dry_run):
+def git_release(ctx, project, source, target, skip_changelog, delete_branch, debug, author, dry_run, release_only, skip_rogue_check, use_deployment_changelog):
     """Executes a GitOps merge and release (with pipeline monitoring and tagging)."""
     import hau_pb2
     stub = get_hau_stub(ctx.obj['config'])
@@ -398,11 +401,17 @@ def git_release(ctx, project, source, target, skip_changelog, delete_branch, deb
         keep_branch=not delete_branch,
         debug=debug,
         author=author or "",
-        dry_run=dry_run
+        dry_run=dry_run,
+        release_only=release_only,
+        skip_rogue_check=skip_rogue_check,
+        use_deployment_changelog=use_deployment_changelog
     )
     
     mode_str = "[DRY-RUN] " if dry_run else ""
-    click.echo(f"{mode_str}Initiating release pipeline for {project} ({source} -> {target})...")
+    if release_only:
+        click.echo(f"{mode_str}Initiating release-only sync for {project} on '{target}'...")
+    else:
+        click.echo(f"{mode_str}Initiating release pipeline for {project} ({source} -> {target})...")
     
     try:
         responses = stub.GitRelease(req)
@@ -410,10 +419,12 @@ def git_release(ctx, project, source, target, skip_changelog, delete_branch, deb
             if not response.success:
                 click.secho(f"❌ {response.message}", fg="red")
             else:
-                if "Pipeline passed" in response.message:
-                    click.secho(f"✅ {response.message}", fg="green")
-                elif "Monitoring Pipeline" in response.message:
-                    click.secho(f"⏳ {response.message}", fg="cyan")
+                if "Pipeline passed" in response.message or "✅" in response.message:
+                    click.secho(f"{response.message}", fg="green")
+                elif "Monitoring Pipeline" in response.message or "⏳" in response.message or "Waiting" in response.message:
+                    click.secho(f"{response.message}", fg="cyan")
+                elif "⚠️" in response.message:
+                    click.secho(f"{response.message}", fg="yellow")
                 else:
                     click.echo(response.message)
     except Exception as e:

@@ -15,6 +15,37 @@ class ContainerRegistryManager:
             self.url = None
             self.token = None
 
+    def container_exists(self, project_path, tag_name):
+        if not self.url or not self.token:
+            return False
+
+        auth_url = f"{self.url.rstrip('/')}/jwt/auth"
+        service = "container_registry"
+        scope = f"repository:{project_path.lower()}:pull"
+        
+        token_res = requests.get(
+            auth_url,
+            params={"service": service, "scope": scope},
+            auth=("__token__", self.token),
+            verify=False
+        )
+        if token_res.status_code != 200:
+            return False
+            
+        token = token_res.json().get("token")
+        
+        parsed_url = urlparse(self.url)
+        registry_url = f"https://{parsed_url.netloc}:4567"
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json"
+        }
+        
+        manifest_url = f"{registry_url}/v2/{project_path.lower()}/manifests/{tag_name}"
+        res = requests.head(manifest_url, headers=headers, verify=False)
+        return res.status_code == 200
+
     def retag_container(self, project_path, old_tag, new_tag):
         if not self.url or not self.token:
             return False, "GitLab config with URL and token is missing."

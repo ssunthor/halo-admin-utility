@@ -382,7 +382,10 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 keep_branch=request.keep_branch,
                 debug=request.debug,
                 author=request.author,
-                dry_run=request.dry_run
+                dry_run=request.dry_run,
+                release_only=getattr(request, 'release_only', False),
+                skip_rogue_check=getattr(request, 'skip_rogue_check', False),
+                use_deployment_changelog=getattr(request, 'use_deployment_changelog', False)
             )
             for item in generator:
                 if isinstance(item, dict):

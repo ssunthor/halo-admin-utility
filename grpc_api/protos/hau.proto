@@ -156,6 +156,9 @@ message GitReleaseRequest {
   bool keep_branch = 6;
   string author = 7;
   bool dry_run = 8;
+  bool release_only = 9;
+  bool skip_rogue_check = 10;
+  bool use_deployment_changelog = 11;
 }
 
 message GitReleaseResponse {

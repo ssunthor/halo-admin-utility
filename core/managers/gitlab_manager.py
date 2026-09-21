@@ -374,11 +374,14 @@ class GitlabManager:
         except Exception as e:
             return False, f"Failed to delete branch '{branch_name}': {e}"
 
-    def create_tag(self, project_path, tag_name, ref):
+    def create_tag(self, project_path, tag_name, ref, message=None):
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         project = gl.projects.get(project_path)
         try:
-            tag = project.tags.create({'tag_name': tag_name, 'ref': ref})
+            payload = {'tag_name': tag_name, 'ref': ref}
+            if message:
+                payload['message'] = message
+            tag = project.tags.create(payload)
             return True, f"Successfully created tag {tag.name} from {ref}."
         except Exception as e:
             return False, f"Failed to create tag: {str(e)}"

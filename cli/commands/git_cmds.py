@@ -150,7 +150,7 @@ def git_inventory(ctx, as_grpc, project):
                 
                 # Check for container creation date and branch last updated date
                 created = c.get('created_at', c.get('container_created'))
-                branch_updated = c.get('branch_last_updated')
+                branch_updated = c.get('last_updated_at')
                 
                 date_str = ""
                 if created and created != "unknown":

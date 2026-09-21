@@ -10,6 +10,27 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: 0.2.4
+  date: "2026-09-21"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '✨ New Features & Enhancements'
+      'items':
+      - 'Updated `run_backfill` in `changelog_orchestrator.py` to iterate over individual merge commits (via `git log --first-parent`) rather than time-based groups, enabling proper sequential version bumping.'
+      - 'Enhanced `_finalize_artifacts` in `release_orchestrator.py` to aggregate multi-version release notes during a backfill into a comprehensive GitLab release description.'
+      - 'Implemented regex-based author email normalization in `changelog_orchestrator.py` to properly map `first.last@domain` to capitalized full names in changelogs.'
+      - 'Standardized the backend payload in `sql_reader.py` to consistently output `last_updated_at` across all branch metadata, eliminating the dual-naming standard with `branch_last_updated`.'
+    - 'category': '🐛 Bug Fixes & Resilience'
+      'items':
+      - 'Updated `git_cmds.py` CLI to read the newly standardized `last_updated_at` field from the inventory payload.'
+      - 'Added specific logging for deployment repository sync paths and included dates in backfill processing logs for better observability.'
+      - 'Fixed an issue where dry-run releases skipped updating the audit log with the correct `source_branch` by moving the audit update logic before the dry-run return block in `release_orchestrator.py`.'
+      - 'Expanded the Action column width in the `git audit` CLI command to fully display longer enum values like `GIT_RELEASE_DRY_RUN`.'
+      - 'Enhanced the audit log for release-only backfills to record the latest merged feature branch as the `source_branch` rather than the internal auto-sync branch.'
+    - 'category': '🧹 Refactoring & Chores'
+      'items':
+      - 'Cleaned up redundant inline library imports in `release_orchestrator.py` (e.g. `json`, `base64`, `gitlab`, `time`) by moving them to the top level, eliminating potential `UnboundLocalError` scoping bugs.'
+
 - version: 0.2.3
   date: "2026-09-17"
   author: "Martin Kecka"

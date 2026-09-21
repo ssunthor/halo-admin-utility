@@ -1,6 +1,7 @@
 import os
 import subprocess
 import logging
+import re
 from typing import Dict, Any, Optional, List
 
 from core.llm_interface import vLLMClient
@@ -36,6 +37,14 @@ class ChangelogOrchestrator:
             return raw_author[:-4]
         if raw_author.endswith(" PRV"):
             return raw_author[:-4]
+            
+        # Handle cases where author is set to email like "first.last@domain.com"
+        email_match = re.match(r'^([a-zA-Z]+)\.([a-zA-Z]+)(?:@.*)?$', raw_author)
+        if email_match:
+            first = email_match.group(1).capitalize()
+            last = email_match.group(2).capitalize()
+            return f"{first} {last}"
+            
         return raw_author
         
     def _generate_changelog(self, raw_commits: str) -> str:
@@ -199,7 +208,7 @@ class ChangelogOrchestrator:
         yield f"Analyzing git history for on branch '{branch}'..."
         
         result = subprocess.run(
-            ['git', 'log', '--first-parent', branch, '--date=short', '--format=%ad|%H|%an', '--reverse'],
+            ['git', 'log', '--first-parent', branch, '--date=short', '--format=%ad|%H|%an|%s', '--reverse'],
             cwd=repo_local_path, capture_output=True, text=True
         )
         
@@ -212,25 +221,35 @@ class ChangelogOrchestrator:
             yield "No commits found."
             return
             
-        days = {}
-        ordered_days = []
+        ordered_commits = []
         for line in lines:
-            parts = line.split('|')
-            if len(parts) != 3: continue
-            date_str, commit_hash, raw_author = parts
-            author = self._format_author(raw_author)
+            parts = line.split('|', 3)
+            if len(parts) != 4: continue
+            date_str, commit_hash, raw_author, subject = parts
+            
+            if (subject.startswith("chore(docs):") or 
+                subject.startswith("chore(release):") or 
+                subject.startswith("HAU Auto-Release:") or 
+                subject.startswith("Auto-sync from ") or 
+                re.match(r'^\[v\d+\.\d+\.\d+.*\]', subject)):
+                continue
                 
-            if date_str not in days:
-                days[date_str] = {'commits': [], 'author': author}
-                ordered_days.append(date_str)
-            days[date_str]['commits'].append(commit_hash)
-            days[date_str]['author'] = author
+            author = self._format_author(raw_author)
+            
+            if start_date and date_str <= start_date:
+                continue
+                
+            ordered_commits.append({
+                'date_str': date_str,
+                'commit_hash': commit_hash,
+                'author': author,
+                'subject': subject
+            })
 
         if start_date:
-            ordered_days = [d for d in ordered_days if d >= start_date]
-            yield f"Filtering for days >= {start_date}. {len(ordered_days)} days to process."
+            yield f"Filtering for days > {start_date}. {len(ordered_commits)} commits to process."
         else:
-            yield f"Found {len(ordered_days)} unique days of activity."
+            yield f"Found {len(ordered_commits)} commits of activity."
         
         def get_next_version(current_version):
             parts = current_version.split('.')
@@ -244,20 +263,19 @@ class ChangelogOrchestrator:
                 patch += 1
             return f"{major}.{minor}.{patch}"
         
-        current_version = start_version
+        current_version = get_next_version(start_version)
         changelog_entries = []
         
-        for i, date_str in enumerate(ordered_days):
-            day_info = days[date_str]
-            first_commit_of_day = day_info['commits'][0]
-            latest_commit = day_info['commits'][-1]
-            author = day_info['author']
+        for i, commit_info in enumerate(ordered_commits):
+            date_str = commit_info['date_str']
+            latest_commit = commit_info['commit_hash']
+            author = commit_info['author']
             
             if i == 0 and start_commit:
                 prev_end_commit = start_commit
             else:
                 parent_res = subprocess.run(
-                    ['git', 'rev-parse', f'{first_commit_of_day}^1'],
+                    ['git', 'rev-parse', f'{latest_commit}^1'],
                     cwd=repo_local_path, capture_output=True, text=True
                 )
                 if parent_res.returncode == 0 and parent_res.stdout.strip():
@@ -265,7 +283,7 @@ class ChangelogOrchestrator:
                 else:
                     prev_end_commit = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
             
-            yield f"\nProcessing Day {i+1}/{len(ordered_days)}: {date_str} (Version {current_version})"
+            yield f"\nProcessing Commit {i+1}/{len(ordered_commits)}: {latest_commit[:7]} on {date_str} (Version {current_version})"
             
             try:
                 final_yaml = None
@@ -276,7 +294,7 @@ class ChangelogOrchestrator:
                     author=author,
                     date_str=date_str,
                     version=current_version,
-                    commits_list=day_info['commits']
+                    commits_list=[latest_commit]
                 ):
                     if isinstance(update, dict) and "final_yaml" in update:
                         final_yaml = update["final_yaml"]
@@ -322,6 +340,9 @@ class ChangelogOrchestrator:
                 
             prev_end_commit = latest_commit
 
+        if not changelog_entries:
+            return
+
         changelog_entries.reverse()
         final_doc = "# ---------------------------------------------------------------------------\n"
         final_doc += "# HALO STANDARD CHANGELOG\n"
@@ -337,7 +358,17 @@ class ChangelogOrchestrator:
         final_doc += "---\n"
         final_doc += "\n\n".join(changelog_entries)
         
-        yield {"final_yaml": final_doc}
+        latest_feature_branch = None
+        if ordered_commits:
+            last_commit = ordered_commits[-1]
+            subject = last_commit['subject']
+            m = re.search(r"Merge branch '([^']+)'", subject)
+            if m:
+                latest_feature_branch = m.group(1)
+            else:
+                latest_feature_branch = subject[:30].strip()
+
+        yield {"final_yaml": final_doc, "latest_feature_branch": latest_feature_branch}
 
     def generate_from_branch(self, repo_local_path: str, branch_name: str, project_name: str) -> str:
         date_res = subprocess.run(

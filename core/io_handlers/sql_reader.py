@@ -216,7 +216,7 @@ class SQLReader:
                             feat_info = {
                                 "branch": b_name,
                                 "branch_author": b_info.get("author", "Unknown"),
-                                "branch_last_updated": b_info.get("last_updated_at"),
+                                "last_updated_at": b_info.get("last_updated_at"),
                                 "container_tag": tag,
                                 "container_created": c_info["created_at"],
                                 "active_deployments": deploy_count,

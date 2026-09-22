@@ -139,6 +139,7 @@ message GitBackfillRequest {
   string start_version = 3;
   string start_commit = 4;
   string start_date = 5;
+  bool debug_run = 6;
 }
 
 message GitBackfillResponse {

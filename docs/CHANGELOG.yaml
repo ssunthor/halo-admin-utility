@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# HALO STANDARD CHANGELOG
+# HALO ADMIN UTILITY (HAU) - CHANGELOG
 #
 # STANDARD CATEGORIES:
 # - "🚀 Architecture & Infrastructure"
@@ -9,6 +9,18 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.2.5
+  date: "2026-09-22"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '✨ New Features & Enhancements'
+      'items':
+      - 'Added `--debug-run` flag to the `backfill-changelog` CLI and gRPC API to simulate changelog generation without invoking the LLM.'
+      - 'Refactored `run_backfill` to group commits by date and merge status, allowing the LLM to process batches of commits for a single version entry instead of individual commits.'
+    - 'category': '🐛 Bug Fixes & Resilience'
+      'items':
+      - 'Improved version initialization logic during backfills by implementing a `has_existing` check to correctly handle projects without a `CHANGELOG.yaml`.'
+
 ---
 - version: 0.2.4
   date: "2026-09-21"
@@ -16,7 +28,7 @@
   changes:
     - 'category': '✨ New Features & Enhancements'
       'items':
-      - 'Updated `run_backfill` in `changelog_orchestrator.py` to iterate over individual merge commits (via `git log --first-parent`) rather than time-based groups, enabling proper sequential version bumping.'
+      - 'Updated `run_backfill` in `changelog_orchestrator.py` to use `git log --first-parent` for commit discovery while retaining the date-based grouping, ensuring proper daily version bumping without fragmenting pre-protection commits.'
       - 'Enhanced `_finalize_artifacts` in `release_orchestrator.py` to aggregate multi-version release notes during a backfill into a comprehensive GitLab release description.'
       - 'Implemented regex-based author email normalization in `changelog_orchestrator.py` to properly map `first.last@domain` to capitalized full names in changelogs.'
       - 'Standardized the backend payload in `sql_reader.py` to consistently output `last_updated_at` across all branch metadata, eliminating the dual-naming standard with `branch_last_updated`.'
@@ -24,6 +36,7 @@
       'items':
       - 'Updated `git_cmds.py` CLI to read the newly standardized `last_updated_at` field from the inventory payload.'
       - 'Added specific logging for deployment repository sync paths and included dates in backfill processing logs for better observability.'
+      - 'Fixed an issue where initial changelog backfills for projects without an existing `CHANGELOG.yaml` incorrectly started at version `0.1.1` instead of `0.1.0`.'
       - 'Fixed an issue where dry-run releases skipped updating the audit log with the correct `source_branch` by moving the audit update logic before the dry-run return block in `release_orchestrator.py`.'
       - 'Expanded the Action column width in the `git audit` CLI command to fully display longer enum values like `GIT_RELEASE_DRY_RUN`.'
       - 'Enhanced the audit log for release-only backfills to record the latest merged feature branch as the `source_branch` rather than the internal auto-sync branch.'

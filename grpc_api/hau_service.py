@@ -336,9 +336,13 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         start_version = request.start_version if request.start_version else "0.1.0"
         start_commit = request.start_commit if request.start_commit else None
         start_date = request.start_date if request.start_date else None
+        cl_path = os.path.join(repo_local_path, 'docs', 'CHANGELOG.yaml')
+        has_existing = False
+        if start_commit or start_date:
+            has_existing = os.path.exists(cl_path) and bool(open(cl_path, 'r').read().strip())
         
         try:
-            for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version, start_commit, start_date):
+            for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version, start_commit, start_date, has_existing=has_existing, debug_run=request.debug_run):
                 if isinstance(item, dict):
                     if "incremental_yaml" in item:
                         yield hau_pb2.GitBackfillResponse(

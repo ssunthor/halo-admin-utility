@@ -1,6 +1,6 @@
 module_info:
   name: "HALO Admin Utility"
-  version: "0.2.4"
+  version: "0.2.5"
   acronym: "HAU"
   category: "Utility"
   description: "Primary operational control plane to provision, govern, and monitor HALO customer tenants."

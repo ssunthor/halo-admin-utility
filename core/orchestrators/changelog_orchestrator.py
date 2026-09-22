@@ -204,7 +204,7 @@ class ChangelogOrchestrator:
             logger.error(f"Failed to generate changelog: {e}")
             raise e
 
-    def run_backfill(self, repo_local_path: str, branch: str, start_version: str = "0.1.0", start_commit: str = None, start_date: str = None):
+    def run_backfill(self, repo_local_path: str, branch: str, start_version: str = "0.1.0", start_commit: str = None, start_date: str = None, has_existing: bool = True, debug_run: bool = False):
         yield f"Analyzing git history for on branch '{branch}'..."
         
         result = subprocess.run(
@@ -239,12 +239,25 @@ class ChangelogOrchestrator:
             if start_date and date_str <= start_date:
                 continue
                 
-            ordered_commits.append({
-                'date_str': date_str,
-                'commit_hash': commit_hash,
-                'author': author,
-                'subject': subject
-            })
+            is_merge = subject.startswith("Merge branch") or subject.startswith("Merge pull request")
+            
+            if (not ordered_commits or 
+                ordered_commits[-1]['is_merge'] or 
+                is_merge or 
+                ordered_commits[-1]['date_str'] != date_str):
+                ordered_commits.append({
+                    'date_str': date_str,
+                    'start_commit_hash': commit_hash,
+                    'end_commit_hash': commit_hash,
+                    'author': author,
+                    'subject': subject,
+                    'commits': [commit_hash],
+                    'is_merge': is_merge
+                })
+            else:
+                ordered_commits[-1]['end_commit_hash'] = commit_hash
+                ordered_commits[-1]['author'] = author
+                ordered_commits[-1]['commits'].append(commit_hash)
 
         if start_date:
             yield f"Filtering for days > {start_date}. {len(ordered_commits)} commits to process."
@@ -263,19 +276,20 @@ class ChangelogOrchestrator:
                 patch += 1
             return f"{major}.{minor}.{patch}"
         
-        current_version = get_next_version(start_version)
+        current_version = get_next_version(start_version) if has_existing else start_version
         changelog_entries = []
         
         for i, commit_info in enumerate(ordered_commits):
             date_str = commit_info['date_str']
-            latest_commit = commit_info['commit_hash']
+            latest_commit = commit_info['end_commit_hash']
+            first_commit = commit_info['start_commit_hash']
             author = commit_info['author']
             
             if i == 0 and start_commit:
                 prev_end_commit = start_commit
             else:
                 parent_res = subprocess.run(
-                    ['git', 'rev-parse', f'{latest_commit}^1'],
+                    ['git', 'rev-parse', f'{first_commit}^1'],
                     cwd=repo_local_path, capture_output=True, text=True
                 )
                 if parent_res.returncode == 0 and parent_res.stdout.strip():
@@ -283,7 +297,14 @@ class ChangelogOrchestrator:
                 else:
                     prev_end_commit = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
             
-            yield f"\nProcessing Commit {i+1}/{len(ordered_commits)}: {latest_commit[:7]} on {date_str} (Version {current_version})"
+            type_str = "Merge feature" if ordered_commits[i]['is_merge'] else "Day"
+            yield f"\nProcessing Commit {i+1}/{len(ordered_commits)}: {latest_commit[:7]} on {date_str} (Version {current_version} - {type_str} changelog)"
+            
+            if debug_run:
+                yield f"  [DEBUG-RUN] Would process {type_str.lower()} commits from {prev_end_commit} to {latest_commit} for Version {current_version}."
+                current_version = get_next_version(current_version)
+                continue
+
             
             try:
                 final_yaml = None
@@ -294,7 +315,7 @@ class ChangelogOrchestrator:
                     author=author,
                     date_str=date_str,
                     version=current_version,
-                    commits_list=[latest_commit]
+                    commits_list=commit_info['commits']
                 ):
                     if isinstance(update, dict) and "final_yaml" in update:
                         final_yaml = update["final_yaml"]

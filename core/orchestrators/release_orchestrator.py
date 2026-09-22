@@ -291,7 +291,7 @@ class ReleaseOrchestrator:
                 yield f"Running deep historical check on '{target_branch}' to detect rogue commits..."
                 full_backfill_yaml = None
                 latest_feature_branch = None
-                for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_date=start_date):
+                for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_date=start_date, has_existing=bool(existing_yaml.strip())):
                     if isinstance(item, dict):
                         if "incremental_yaml" in item:
                             full_backfill_yaml = item["incremental_yaml"]
@@ -433,7 +433,7 @@ class ReleaseOrchestrator:
             start_version, start_date = self._get_top_version_and_date(existing_yaml)
             
             check_yaml = None
-            for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_date=start_date):
+            for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_date=start_date, has_existing=bool(existing_yaml.strip())):
                 if isinstance(item, dict) and "final_yaml" in item:
                     check_yaml = item["final_yaml"]
             

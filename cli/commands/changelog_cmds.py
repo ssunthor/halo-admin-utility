@@ -47,8 +47,9 @@ def generate_changelog(ctx, project, branch):
 @click.option('--start-version', default='0.1.0', help="Starting version")
 @click.option('--start-commit', default='', help="Optional starting commit hash (exclusive)")
 @click.option('--out', default='backfill_output.yaml', help="Output file path")
+@click.option('--debug-run', is_flag=True, help="Simulate generation without calling LLM")
 @click.pass_context
-def backfill_changelog(ctx, project, branch, start_version, start_commit, out):
+def backfill_changelog(ctx, project, branch, start_version, start_commit, out, debug_run):
     """Backfills a semantic changelog via the HAU gRPC streaming backend."""
     config = ctx.obj['config']
     
@@ -60,7 +61,8 @@ def backfill_changelog(ctx, project, branch, start_version, start_commit, out):
             project_name=project,
             branch_name=branch,
             start_version=start_version,
-            start_commit=start_commit
+            start_commit=start_commit,
+            debug_run=debug_run
         )
         
         # This will block and stream responses from the server

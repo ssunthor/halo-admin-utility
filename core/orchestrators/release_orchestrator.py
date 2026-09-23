@@ -74,6 +74,21 @@ class ReleaseOrchestrator:
             logger.error(f"[GitRelease] Failed to generate commit message: {e}")
             return f"[v{version}] Auto-merge feature"
 
+    def _check_active_pipeline(self, project_name: str, branch: str):
+        try:
+            gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
+            project = gl.projects.get(project_name)
+            pipelines = project.pipelines.list(ref=branch, order_by='id', sort='desc', get_all=False)
+            if pipelines:
+                latest = pipelines[0]
+                if latest.status in ['running', 'pending', 'created', 'waiting_for_resource', 'preparing']:
+                    return True, latest.status
+            return False, None
+        except Exception as e:
+            logger.warning(f"Failed to check pipelines for {branch}: {e}")
+            return False, None
+
+
     def run_release(self, project_name: str, source_branch: str, target_branch: str, 
                     skip_changelog: bool, keep_branch: bool, debug: bool = False, 
                     author: str = None, dry_run: bool = False,
@@ -280,6 +295,10 @@ class ReleaseOrchestrator:
                         yield {"success": True, "message": f"✅ Branch '{target_branch}' is already clean and fully documented. No release needed."}
                         return
                     else:
+                        is_active, p_status = self._check_active_pipeline(project_name, target_branch)
+                        if is_active:
+                            yield {"success": False, "message": f"❌ Aborting: The branch '{target_branch}' currently has an active pipeline ({p_status}). Please wait for the container build to finish before retagging."}
+                            return
                         yield f"⚠️ Target version '{target_version_tag}' container is missing. Proceeding with retagging..."
                         if dry_run:
                             yield f"[DRY-RUN] Would retag container to '{target_version_tag}' and create Git release."
@@ -321,6 +340,10 @@ class ReleaseOrchestrator:
                         yield {"success": True, "message": f"✅ Branch '{target_branch}' is already clean and fully documented. No release needed."}
                         return
                     else:
+                        is_active, p_status = self._check_active_pipeline(project_name, target_branch)
+                        if is_active:
+                            yield {"success": False, "message": f"❌ Aborting: The branch '{target_branch}' currently has an active pipeline ({p_status}). Please wait for the container build to finish before retagging."}
+                            return
                         yield f"⚠️ Target version '{target_version_tag}' container is missing. Proceeding with retagging..."
                         if dry_run:
                             yield f"[DRY-RUN] Would retag container to '{target_version_tag}' and create Git release."
@@ -420,6 +443,11 @@ class ReleaseOrchestrator:
                     yield f"Successfully synced changelog to deployment docs."
                 except Exception as e:
                     yield f"Warning: Failed to sync changelog to deployment repo: {e}"
+
+            is_active, p_status = self._check_active_pipeline(project_name, target_branch)
+            if is_active:
+                yield {"success": False, "message": f"❌ Aborting: The branch '{target_branch}' currently has an active pipeline ({p_status}). Please wait for the container build to finish before retagging."}
+                return
 
             yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=full_backfill_yaml)
             return

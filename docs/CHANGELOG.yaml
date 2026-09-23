@@ -9,6 +9,15 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.2.7
+  date: "2026-09-23"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '🐛 Bug Fixes & Resilience'
+      'items':
+      - 'Added a pipeline status verification check to `ReleaseOrchestrator` to prevent race conditions during `release-only` workflows and changelog skips, ensuring HAU actively waits for target container builds to finish before retagging them in the registry.'
+
+---
 - version: 0.2.6
   date: "2026-09-22"
   author: "Martin Kecka"

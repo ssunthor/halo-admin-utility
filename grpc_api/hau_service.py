@@ -164,17 +164,43 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         result = self.gitlab_manager.checkout_project_branch(request.project_name, request.branch_name)
         return hau_pb2.GitCheckoutResponse(success=True, message=result)
 
-    @handle_rpc(hau_pb2.InventorySyncResponse)
+    # Notice: Removing @handle_rpc because this is now a streaming RPC
     def InventorySync(self, request, context):
-        with self._get_db_session(write=True) as session:
-            if not session:
-                return hau_pb2.InventorySyncResponse(success=False, message="Database configuration is missing.")
+        import queue
+        import threading
+        q = queue.Queue()
+        
+        def cb(msg):
+            q.put(msg)
             
-            sql_writer = SQLWriter(session)
-            orchestrator = InventoryOrchestrator(self.config, sql_writer, vault_client=self.vault_client)
-            orchestrator.sync_inventory()
-            
-            return hau_pb2.InventorySyncResponse(success=True, message="Inventory sync complete.")
+        def run_sync():
+            try:
+                with self._get_db_session(write=True) as session:
+                    if not session:
+                        q.put(Exception("Database configuration is missing."))
+                        return
+                    
+                    sql_writer = SQLWriter(session)
+                    orchestrator = InventoryOrchestrator(self.config, sql_writer, vault_client=self.vault_client)
+                    orchestrator.sync_inventory(progress_cb=cb)
+                q.put(True)
+            except Exception as e:
+                logger.error(f"[InventorySync] Failed: {e}")
+                q.put(e)
+                
+        t = threading.Thread(target=run_sync)
+        t.start()
+        
+        while True:
+            item = q.get()
+            if item is True:
+                yield hau_pb2.InventorySyncResponse(success=True, message="Inventory sync complete.")
+                break
+            elif isinstance(item, Exception):
+                yield hau_pb2.InventorySyncResponse(success=False, message=str(item))
+                break
+            else:
+                yield hau_pb2.InventorySyncResponse(success=True, message=str(item))
 
     @handle_rpc(hau_pb2.InventoryListResponse)
     def InventoryList(self, request, context):

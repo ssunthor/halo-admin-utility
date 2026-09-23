@@ -274,6 +274,10 @@ class GitInventoryManager:
                 proj_id = p.get('id', '').split('/')[-1]
                 git_info_tasks[executor.submit(fetch_project_git_info, proj_id)] = proj_id
                 for c in p.get('containerRepositories', {}).get('nodes', []):
+                    c_name = c.get('name', '').lower()
+                    if c_name in ['tmp', 'cache']:
+                        continue
+                        
                     if c.get('tagsCount', 0) > 0:
                         repo_id = c.get('id', '').split('/')[-1]
                         fetch_tasks[executor.submit(fetch_tag_list, proj_id, repo_id)] = c.get('id')

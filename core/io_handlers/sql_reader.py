@@ -273,13 +273,47 @@ class SQLReader:
             matched_branches = [f["branch"] for f in features] + [f["branch"] for f in core_environments if "branch" in f]
             active_branches_without_containers = []
             
+            # Extract known container repository names for this project
+            known_container_names = set(c.image_path.split('/')[-1] for c in p.containers if c.image_path)
+            if not known_container_names:
+                known_container_names = {p.project_name}
+                
             for b_name, b_info in branches.items():
                 if b_name not in matched_branches:
-                    branch_info = {"branch": b_name, "author": b_info.get("author", "Unknown"), "last_updated_at": b_info.get("last_updated_at")}
+                    sanitized_b = b_name.replace('/', '-')
+                    
+                    # Proactively check if there are active deployments for this branch
+                    # even if the container tag was deleted from the registry (e.g. by cleanup pipelines)
+                    deploy_count = 0
+                    deploy_namespaces = []
+                    for c_name in known_container_names:
+                        short_image = f"{c_name}:{sanitized_b}"
+                        if short_image in active_deployments:
+                            d_info = active_deployments[short_image]
+                            deploy_count += d_info.get('count', 0)
+                            deploy_namespaces.extend(d_info.get('namespaces', []))
+                    
+                    branch_info = {
+                        "branch": b_name, 
+                        "author": b_info.get("author", "Unknown"), 
+                        "last_updated_at": b_info.get("last_updated_at")
+                    }
+                    
+                    # If it has active deployments, we map it to the branch so it's not invisible
+                    if deploy_count > 0:
+                        branch_info["container_tag"] = sanitized_b
+                        branch_info["container_created"] = "unknown"
+                        branch_info["active_deployments"] = deploy_count
+                        branch_info["active_namespaces"] = deploy_namespaces
+                        branch_info["has_native_release"] = False
+                    
                     if b_name in ["main", "master", "dev"]:
                         core_environments.append(branch_info)
                     else:
-                        active_branches_without_containers.append(branch_info)
+                        if deploy_count > 0:
+                            features.append(branch_info)
+                        else:
+                            active_branches_without_containers.append(branch_info)
             
             proj_data = {
                 "name": p.project_name,

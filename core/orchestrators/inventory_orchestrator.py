@@ -12,8 +12,13 @@ class InventoryOrchestrator:
         self.rancher_clusters = config.get('rancher_clusters', {})
         self.valid_app_namespaces = set()
 
-    def sync_inventory(self):
-        logger.info("Starting inventory sync across all configured clusters...")
+    def sync_inventory(self, progress_cb=None):
+        def _notify(msg):
+            logger.info(msg)
+            if progress_cb:
+                progress_cb(msg)
+
+        _notify("Starting inventory sync across all configured clusters...")
         self.sql_writer.clear_inventory()
         
         for region, cluster_conf in self.rancher_clusters.items():
@@ -21,17 +26,18 @@ class InventoryOrchestrator:
             gpu_cluster = cluster_conf.get('gpu_cluster_name')
 
             if app_cluster:
+                _notify(f"Connecting to App cluster: {app_cluster}")
                 self._sync_app_cluster(region, cluster_conf, app_cluster)
             
             if gpu_cluster:
+                _notify(f"Connecting to GPU cluster: {gpu_cluster}")
                 self._sync_gpu_cluster(region, cluster_conf, gpu_cluster)
 
         self.sql_writer.clean_orphaned_tenants()
         self.sql_writer.session.commit()
-        logger.info("Inventory sync complete.")
+        _notify("Inventory sync complete.")
 
     def _sync_app_cluster(self, region, cluster_conf, app_cluster):
-        logger.info(f"Connecting to App cluster: {app_cluster}")
         try:
             km = KubeManager(cluster_conf, app_cluster, vault_client=self.vault_client, config_ref=self.config)
             namespaces = km.core_v1.list_namespace()
@@ -181,7 +187,6 @@ class InventoryOrchestrator:
             logger.error(f"Failed to list configmaps in {ns_name}: {e}")
 
     def _sync_gpu_cluster(self, region, cluster_conf, gpu_cluster):
-        logger.info(f"Connecting to GPU cluster: {gpu_cluster}")
         try:
             km = KubeManager(cluster_conf, gpu_cluster, vault_client=self.vault_client, config_ref=self.config)
             ns_name = "halo"

@@ -8,7 +8,7 @@ service HauService {
   rpc GitListCache(GitListCacheRequest) returns (GitListCacheResponse);
   rpc GitPush(GitPushRequest) returns (GitPushResponse);
   rpc GitCheckout(GitCheckoutRequest) returns (GitCheckoutResponse);
-  rpc InventorySync(InventorySyncRequest) returns (InventorySyncResponse);
+  rpc InventorySync(InventorySyncRequest) returns (stream InventorySyncResponse);
   rpc InventoryList(InventoryListRequest) returns (InventoryListResponse);
   rpc InventoryDeleteOrphaned(InventoryDeleteOrphanedRequest) returns (InventoryDeleteOrphanedResponse);
   rpc GenerateChangelog(GenerateChangelogRequest) returns (GenerateChangelogResponse);

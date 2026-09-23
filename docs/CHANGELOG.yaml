@@ -9,6 +9,20 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+- version: 0.2.6
+  date: "2026-09-22"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '✨ New Features & Enhancements'
+      'items':
+      - 'Converted the `InventorySync` gRPC API to a streaming response, allowing the CLI to provide real-time progress updates during synchronization.'
+      - 'Enhanced the `sync-inventory` CLI command with improved visual feedback, including progress indicators and colored status messages.'
+    - 'category': '🐛 Bug Fixes & Resilience'
+      'items':
+      - 'Improved branch discovery logic in `SQLReader` to proactively identify branches with active deployments, preventing them from becoming invisible when container tags are deleted from the registry.'
+      - 'Added filters to skip `tmp` and `cache` container repositories during inventory synchronization to reduce noise and improve performance.'
+
+---
 - version: 0.2.5
   date: "2026-09-22"
   author: "Martin Kecka"
@@ -21,7 +35,6 @@
       'items':
       - 'Improved version initialization logic during backfills by implementing a `has_existing` check to correctly handle projects without a `CHANGELOG.yaml`.'
 
----
 - version: 0.2.4
   date: "2026-09-21"
   author: "Martin Kecka"

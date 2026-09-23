@@ -23,18 +23,33 @@ def sync_inventory(ctx, as_grpc):
         click.echo("[FATAL] Could not connect to gRPC server.")
         return
         
-    click.echo("Syncing inventory via gRPC...")
+    click.echo("Syncing inventory via gRPC. This may take a moment...")
     req = hau_pb2.InventorySyncRequest()
-    resp = stub.InventorySync(req)
+    responses = stub.InventorySync(req)
     
     if as_grpc:
-        print_grpc_json(resp)
+        # For streaming responses, we collect and print
+        for resp in responses:
+            print_grpc_json(resp)
         return
         
-    if resp.success:
-        click.echo(f"✅ {resp.message}")
+    final_success = True
+    final_message = ""
+    for resp in responses:
+        if "Inventory sync complete" in resp.message:
+            final_success = resp.success
+            final_message = resp.message
+        elif not resp.success and "Failed:" in resp.message:
+            final_success = resp.success
+            final_message = resp.message
+            click.secho(f"Error: {resp.message}", fg='red')
+        else:
+            click.echo(f" ⏳ {resp.message}")
+            
+    if not final_success:
+        click.secho(f"❌ Failed: {final_message}", fg='red')
     else:
-        click.echo(f"❌ Failed: {resp.message}")
+        click.secho(f"✅ {final_message}", fg='green', bold=True)
 
 @inventory_cli.command(name='list')
 @click.option('--tenant', help='Filter by tenant acronym (e.g. gtt)')

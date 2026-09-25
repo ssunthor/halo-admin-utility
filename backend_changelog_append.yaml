@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# HALO STANDARD CHANGELOG
+#
+# STANDARD CATEGORIES:
+# - "🚀 Architecture & Infrastructure"
+# - "✨ New Features & Enhancements"
+# - "🎨 UI / UX Improvements"
+# - "🐛 Bug Fixes & Resilience"
+# - "🔒 Security & Auth"
+# - "🧹 Refactoring & Chores"
+# ---------------------------------------------------------------------------
+---
+- version: '0.3.4'
+  date: '2026-09-24'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Improved internal node detection to include hosts associated with customer sites, preventing them from being incorrectly filtered as external noise.'
+        - 'Enhanced topology node synchronization to ensure site and site name metadata are correctly back-filled from the prefix cache.'
+
+
+- version: '0.3.3'
+  date: '2026-09-24'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Introduced a live flights overlay for the Destinations map, integrating real-time aircraft data via the adsb.lol API.'
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Refactored network flow processing to utilize a centralized resolution system for site-to-site and site-to-public traffic.'
+        - 'Implemented automated classification of internal (RFC 1918/CGNAT) versus public IP addresses to improve map plotting accuracy.'
+
+
+- version: '0.3.2'
+  date: '2026-09-23'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Added API endpoints for NetBox options and sites to facilitate host form data population.'
+        - 'Implemented Halo discovery tracking to distinguish between managed and automatically discovered hosts during inventory reconciliation.'
+        - 'Updated the inventory sighting worker to ignore hosts already flagged as halo-discovered, reducing redundant processing.'
+
+
+- version: '0.3.1'
+  date: '2026-09-22'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented automated synchronization of device configurations to Sentinel to enable config-aware CVE analysis.'
+        - 'Added API endpoints to manually trigger and monitor the status of configuration pushes.'
+    - category: '🔒 Security & Auth'
+      items:
+        - 'Introduced a redaction engine to strip sensitive credentials, keys, and secrets from configurations before external transmission.'
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Integrated a background reconciliation worker to manage periodic configuration updates and state tracking via Redis.'

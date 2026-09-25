@@ -90,7 +90,7 @@ class SeraStandardServiceImpl(sera_standard_pb2_grpc.SeraAppServiceServicer):
             description=self.module_info.get('description', 'unknown'),
             services=services,
             downstream_dependencies=deps,
-            custom_metadata={"sera_standard": "v1.1-universal"}
+            custom_metadata={"sera_standard": "v1.2-universal"}
         )
 
         llm_config = self.config.get("llm_engines", {})
@@ -514,9 +514,44 @@ class SeraStandardServiceImpl(sera_standard_pb2_grpc.SeraAppServiceServicer):
         for svc in response.service_health_matrix:
             if svc.status != "running":
                 overall = "DEGRADED"
+                
+        has_down_postgres = False
+        prod_connector_dep_down = False
+        sole_dependency_down = False
+        category = self.module_info.get('category', 'unknown').lower()
+        
+        external_deps = [dep for dep in response.dependency_health_matrix if dep.dependency_group in ["external", "connector"]]
+        
+        if category == 'connector' and len(external_deps) == 1 and external_deps[0].status == "DOWN":
+            sole_dependency_down = True
+        
         for dep in response.dependency_health_matrix:
             if dep.status != "OK":
                 overall = "DEGRADED"
+                
+            if dep.dependency_type == "postgresql" and dep.status == "DOWN":
+                has_down_postgres = True
+                
+            if category == 'connector' and not sole_dependency_down and dep.status == "DOWN" and dep.dependency_group in ["external", "connector"]:
+                dep_name = dep.dependency_name.lower()
+                env_meta = str(dep.connection_metadata.get('environment', dep.connection_metadata.get('env', ''))).lower()
+                
+                is_prod = False
+                if env_meta in ['prod', 'production']:
+                    is_prod = True
+                elif 'prod' in dep_name and 'preprod' not in dep_name and 'nonprod' not in dep_name:
+                    is_prod = True
+                elif not env_meta and 'test' not in dep_name and 'dev' not in dep_name and 'qa' not in dep_name and 'uat' not in dep_name and 'sandbox' not in dep_name and 'stg' not in dep_name:
+                    is_prod = True
+                    
+                if is_prod:
+                    prod_connector_dep_down = True
+
+        if has_down_postgres:
+            overall = "DOWN"
+        elif category == 'connector' and (sole_dependency_down or prod_connector_dep_down):
+            overall = "DOWN"
+            
         response.overall_status = overall
 
         return response

@@ -1,0 +1,124 @@
+# ---------------------------------------------------------------------------
+# HALO STANDARD CHANGELOG
+#
+# STANDARD CATEGORIES:
+# - "🚀 Architecture & Infrastructure"
+# - "✨ New Features & Enhancements"
+# - "🎨 UI / UX Improvements"
+# - "🐛 Bug Fixes & Resilience"
+# - "🔒 Security & Auth"
+# - "🧹 Refactoring & Chores"
+# ---------------------------------------------------------------------------
+---
+- version: '0.4.2'
+  date: '2026-09-24'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented CSV export functionality for anomaly forensic logs within the Host Detail view.'
+
+
+- version: '0.4.1'
+  date: '2026-09-24'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented a site-based filtering system for the network graph to isolate specific site hosts and their associated connections.'
+
+
+- version: '0.4.0'
+  date: '2026-09-24'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Implemented sessionStorage caching for host inventory to reduce redundant API calls and improve initial load performance.'
+        - 'Optimized host list rendering by decoupling static REST data from live WebSocket updates, significantly reducing unnecessary component re-renders.'
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Added GPS coordinate support for sites, including an automated address-to-coordinate lookup utility via OpenStreetMap.'
+        - 'Introduced a tabbed navigation system in the Host Detail view to organize Overview, Asset, Anomaly Log, and Connection data.'
+        - 'Replaced manual site slug text entry with a dynamic selection dropdown in the Network Inventory management modals.'
+    - category: '🎨 UI / UX Improvements'
+      items:
+        - 'Redesigned the Host Detail overlay from a side-panel to a centered, responsive modal with improved animations.'
+        - 'Simplified the IP address display in the host inventory list and added text truncation for site names to prevent layout overflow.'
+        - 'Updated application terminology, replacing specific "NetBox" references with "Inventory" for better ecosystem alignment.'
+    - category: '🧹 Refactoring & Chores'
+      items:
+        - 'Consolidated API requests for site options to eliminate redundant network calls across the Host and Network inventory modules.'
+
+
+- version: '0.3.9'
+  date: '2026-09-24'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Implemented configurable map tile providers via environment variables to support air-gapped deployments.'
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Replaced static SVG maps with a dynamic raster-based mapping system using Leaflet for improved geospatial precision and zoom capabilities.'
+        - 'Implemented dynamic site discovery and mapping by integrating NetBox site data and host inventory, removing hardcoded location mappings.'
+        - 'Added a site-specific filtering system to isolate and analyze traffic flows for individual locations via search and selection.'
+        - 'Introduced a live aircraft tracking overlay using ADSB data to visualize flights in proximity to active sites.'
+    - category: '🎨 UI / UX Improvements'
+      items:
+        - 'Added a dark-mode theme filter for map tiles to ensure visual consistency across dashboard presets.'
+        - 'Enhanced traffic flow visualization with detailed info cards and interactive hover states for endpoints and arcs.'
+        - 'Introduced a "Fit sites" utility to automatically adjust map zoom and center based on the currently visible site set.'
+
+
+- version: '0.3.8'
+  date: '2026-09-23'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Fixed an issue in the Site Inventory component where editing a site would incorrectly overwrite the customer site status to true.'
+
+
+- version: '0.3.7'
+  date: '2026-09-23'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Added support for physical address tracking and management within the Site Inventory.'
+        - 'Updated Site Inventory to display all registered NetBox sites, ensuring visibility of sites without assigned hosts.'
+        - 'Integrated dynamic NetBox option fetching for host creation and editing, including roles, manufacturers, platforms, and sites.'
+    - category: '🎨 UI / UX Improvements'
+      items:
+        - 'Implemented intelligent ComboInput components featuring manufacturer-based model filtering and "Create in NetBox" suggestions.'
+        - 'Enhanced the Site Inventory interface to display physical addresses and provide placeholders for empty sites.'
+
+
+- version: '0.3.6'
+  date: '2026-09-22'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented config-aware CVE applicability analysis to determine if vulnerabilities are exploitable based on the device running configuration.'
+        - 'Introduced effective severity scoring to provide a more accurate risk assessment by filtering out CVEs ruled out by configuration.'
+        - 'Added the ability to view specific configuration evidence snippets and AI-generated suggested configuration changes for vulnerability mitigation.'
+    - category: '🎨 UI / UX Improvements'
+      items:
+        - 'Enhanced FBA configuration analysis states with granular feedback for pending, failed, or missing lookups.'
+        - 'Added a manual refresh trigger to force an immediate FBA configuration lookup for devices.'
+
+
+- version: '0.3.5'
+  date: '2026-09-22'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Added support for editing Platform and OS Version fields for imported and discovered hosts.'
+        - 'Implemented dynamic attribute suggestions for host editing by aggregating unique values from the existing inventory.'
+    - category: '🎨 UI / UX Improvements'
+      items:
+        - 'Introduced a searchable ComboInput component to replace standard text inputs for host attributes.'
+        - 'Migrated host editing from a standalone modal to an inline experience within the Host Detail Overlay to streamline the update workflow.'

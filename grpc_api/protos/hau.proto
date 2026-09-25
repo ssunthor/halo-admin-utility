@@ -31,6 +31,8 @@ service HauService {
   rpc DecommissionTenant(DecommissionTenantRequest) returns (stream DecommissionTenantResponse);
   rpc GetBaseSchema(GetBaseSchemaRequest) returns (GetBaseSchemaResponse);
   rpc TenantList(TenantListRequest) returns (TenantListResponse);
+  rpc GitRetag(GitRetagRequest) returns (GitRetagResponse);
+  rpc GitPushChangelog(GitPushChangelogRequest) returns (stream GitPushChangelogResponse);
 }
 
 message InventorySyncRequest {}
@@ -406,4 +408,27 @@ message TenantListResponse {
   bool success = 1;
   string message = 2;
   repeated TenantInfo tenants = 3;
+}
+
+message GitRetagRequest {
+  string project_name = 1;
+  string source_tag = 2;
+  string target_tag = 3;
+}
+
+message GitRetagResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GitPushChangelogRequest {
+  string project_name = 1;
+  string target_branch = 2;
+  string raw_yaml_changelog = 3;
+  bool dry_run = 4;
+}
+
+message GitPushChangelogResponse {
+  bool success = 1;
+  string message = 2;
 }

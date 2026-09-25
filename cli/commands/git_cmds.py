@@ -649,3 +649,74 @@ def git_delete(ctx, project, branch, container, yes, as_grpc):
             click.secho(f"⚠️ Deletion Finished with Warnings:\n{resp.message}", fg="yellow")
         else:
             click.secho(f"✅ Deletion Success:\n{resp.message}", fg="green")
+
+@git_cli.command(name='retag')
+@click.option('--project', required=True, help="Project name (e.g. ai/halo/backend)")
+@click.option('--source', required=True, help="Source tag to retag from (e.g. 0.1.5-dev)")
+@click.option('--target', required=True, help="Target tag to retag to (e.g. 0.1.4-dev)")
+@click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
+@handle_grpc_errors
+@click.pass_context
+def git_retag(ctx, project, source, target, as_grpc):
+    """Retags a container image in the registry."""
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    req = hau_pb2.GitRetagRequest(
+        project_name=project,
+        source_tag=source,
+        target_tag=target
+    )
+    click.echo(f"Retagging '{source}' to '{target}' for '{project}'...")
+    resp = stub.GitRetag(req)
+    
+    if as_grpc:
+        print_grpc_json(resp)
+        return
+        
+    if resp.success:
+        click.secho(f"✅ Success: {resp.message}", fg="green")
+    else:
+        click.secho(f"❌ Failed: {resp.message}", fg="red")
+
+@git_cli.command(name='push-changelog')
+@click.option('--project', required=True, help="Project name (e.g. ai/halo/backend)")
+@click.option('--target', required=True, help="Target branch (e.g. dev)")
+@click.option('--source-file', required=True, help="Local file path containing the raw YAML changelog")
+@click.option('--dry-run', is_flag=True, help="Simulate the API push without modifying GitLab.")
+@click.option("--grpc", "as_grpc", is_flag=True, help="Output raw gRPC response as JSON")
+@handle_grpc_errors
+@click.pass_context
+def git_push_changelog(ctx, project, target, source_file, dry_run, as_grpc):
+    """Pushes a local changelog YAML file directly to a branch via API (skipping CI)."""
+    import os
+    if not os.path.exists(source_file):
+        click.secho(f"❌ File not found: {source_file}", fg="red")
+        return
+        
+    with open(source_file, 'r') as f:
+        content = f.read()
+        
+    import hau_pb2
+    stub = get_hau_stub(ctx.obj['config'])
+    req = hau_pb2.GitPushChangelogRequest(
+        project_name=project,
+        target_branch=target,
+        raw_yaml_changelog=content,
+        dry_run=dry_run
+    )
+    
+    mode_str = "[DRY-RUN] " if dry_run else ""
+    click.echo(f"{mode_str}Pushing changelog to '{project}' on branch '{target}'...")
+    
+    for resp in stub.GitPushChangelog(req):
+        if as_grpc:
+            print_grpc_json(resp)
+            continue
+            
+        if not resp.success:
+            click.secho(f"❌ Failed: {resp.message}", fg="red")
+        else:
+            if "✅" in resp.message:
+                click.secho(resp.message, fg="green")
+            else:
+                click.echo(resp.message)

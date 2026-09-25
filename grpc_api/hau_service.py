@@ -17,6 +17,9 @@ from core.orchestrators.release_orchestrator import ReleaseOrchestrator
 from core.orchestrators.delete_orchestrator import DeleteOrchestrator
 
 import datetime
+import time
+import gitlab
+from core.managers.git_pipeline_manager import GitPipelineManager
 
 logger = logging.getLogger(__name__)
 
@@ -896,3 +899,160 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         except Exception as e:
             logger.error(f"[GetBaseSchema] Failed: {e}")
             return hau_pb2.GetBaseSchemaResponse(success=False, message=str(e))
+
+    @handle_rpc(hau_pb2.GitRetagResponse)
+    def GitRetag(self, request, context):
+        if not self.gitlab_manager:
+            return hau_pb2.GitRetagResponse(success=False, message="GitlabManager is not initialized.")
+        from core.managers.container_registry_manager import ContainerRegistryManager
+        registry_manager = ContainerRegistryManager(self.config)
+        
+        success, message = registry_manager.retag_container(
+            project_path=request.project_name,
+            old_tag=request.source_tag,
+            new_tag=request.target_tag
+        )
+        return hau_pb2.GitRetagResponse(success=success, message=message)
+
+    @handle_rpc(hau_pb2.GitPushChangelogResponse)
+    def GitPushChangelog(self, request, context):
+        if not self.gitlab_manager:
+            yield hau_pb2.GitPushChangelogResponse(success=False, message="GitlabManager is not initialized.")
+            return
+            
+        proj_basename = request.project_name.split('/')[-1]
+        file_path = f"docs/CHANGELOG.yaml"
+        commit_msg_prefix = f"chore(release): manual changelog update"
+        
+        if request.dry_run:
+            yield hau_pb2.GitPushChangelogResponse(
+                success=True, 
+                message=f"[DRY-RUN] Would push to {request.project_name} on branch {request.target_branch} (via MR) and deployment repo (docs/{proj_basename}/CHANGELOG.yaml on main)."
+            )
+            return
+
+        actor_name = extract_client_id(context)
+        audit_log_id = None
+        
+        with self._get_db_session(write=True) as session:
+            sql_writer = SQLWriter(session)
+            sql_reader = SQLReader(session)
+            
+            try:
+                active_lock = sql_reader.get_active_git_release_audit_log(request.project_name)
+                if active_lock:
+                    yield hau_pb2.GitPushChangelogResponse(success=False, message=f"⚠️ WARNING: A release (Action: {active_lock.action}) is already currently running for {request.project_name} by {active_lock.actor}. Please wait for it to finish.")
+                    return
+                
+                audit_log = sql_writer.create_git_release_audit_log(
+                    project_name=request.project_name,
+                    action="GIT_PUSH_CHANGELOG",
+                    actor=actor_name,
+                    status="RUNNING",
+                    source_branch="N/A",
+                    target_branch=request.target_branch
+                )
+                audit_log_id = audit_log.id
+            except Exception as e:
+                logger.error(f"[GitPushChangelog] Failed to create audit log: {e}")
+
+        try:
+            temp_branch = f"fix/changelog-{int(time.time())}"
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Preparing local git workspace for {request.project_name}...")
+            
+            local_base = self.config['external_services']['gitlab']['local_clone_path']
+            repo_local_path = self.gitlab_manager.resolve_local_repo_path(request.project_name, local_base)
+            
+            self.gitlab_manager.checkout_project_branch(request.project_name, request.target_branch)
+            subprocess.run(['git', 'checkout', '-b', temp_branch], cwd=repo_local_path, capture_output=True)
+            
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Writing updated CHANGELOG.yaml locally...")
+            full_cl_path = os.path.join(repo_local_path, file_path)
+            os.makedirs(os.path.dirname(full_cl_path), exist_ok=True)
+            with open(full_cl_path, 'w') as f:
+                f.write(request.raw_yaml_changelog)
+                
+            author_name_cfg = self.config.get('external_services', {}).get('gitlab', {}).get('bot_username', 'GIA AI Bot')
+            author_email_cfg = "gia-ai@gtt.net"
+            
+            subprocess.run(['git', 'config', 'user.name', author_name_cfg], cwd=repo_local_path)
+            subprocess.run(['git', 'config', 'user.email', author_email_cfg], cwd=repo_local_path)
+            subprocess.run(['git', 'add', file_path], cwd=repo_local_path)
+            subprocess.run(['git', 'commit', f'--author={author_name_cfg} <{author_email_cfg}>', '-m', f"{commit_msg_prefix} [skip ci]"], cwd=repo_local_path, capture_output=True)
+            
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Pushing temporary branch '{temp_branch}' to origin...")
+            subprocess.run(['git', 'push', '-o', 'ci.skip', '-u', 'origin', temp_branch], cwd=repo_local_path, capture_output=True)
+
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Triggering environment sync merge (skipping CI)...")
+            from core.managers.git_pipeline_manager import GitPipelineManager
+            pm = GitPipelineManager(self.config)
+            success, mr_iid, msg = pm.create_and_merge_mr(
+                request.project_name,
+                temp_branch,
+                request.target_branch,
+                f"Manual changelog update for {proj_basename} [skip ci]",
+                keep_branch=False
+            )
+            
+            if audit_log_id:
+                with self._get_db_session(write=True) as session:
+                    SQLWriter(session).update_git_release_audit_log(audit_log_id, merge_request_id=str(mr_iid), source_branch=temp_branch)
+            
+            if not success:
+                yield hau_pb2.GitPushChangelogResponse(success=False, message=f"Failed to merge MR: {msg}")
+                if audit_log_id:
+                    with self._get_db_session(write=True) as session:
+                        SQLWriter(session).update_git_release_audit_log(audit_log_id, status="FAILED", error_message=msg)
+                return
+                
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Waiting for merge to complete (skipping pipeline wait due to [skip ci])....")
+            gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
+            project = gl.projects.get(request.project_name)
+            merged = False
+            for _ in range(30):
+                try:
+                    mr = project.mergerequests.get(mr_iid)
+                    if mr.state == 'merged':
+                        merged = True
+                        break
+                    if mr.state == 'closed':
+                        break
+                    yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Merge in progress (State: {mr.state}, Status: {mr.detailed_merge_status})...")
+                except Exception as e:
+                    logger.warning(f"Error checking MR status: {e}")
+                time.sleep(5)
+                
+            if not merged:
+                err_msg = f"MR !{mr_iid} failed to merge. State: {mr.state}"
+                yield hau_pb2.GitPushChangelogResponse(success=False, message=err_msg)
+                if audit_log_id:
+                    with self._get_db_session(write=True) as session:
+                        SQLWriter(session).update_git_release_audit_log(audit_log_id, status="FAILED", error_message=err_msg)
+                return
+            
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Synchronizing updated changelog to deployment repository (docs/{proj_basename}/CHANGELOG.yaml)...")
+            dep_file_path = f"docs/{proj_basename}/CHANGELOG.yaml"
+            try:
+                self.gitlab_manager.commit_file_api(
+                    project_path="ai/halo/deployment",
+                    file_path=dep_file_path,
+                    branch="main",
+                    content=request.raw_yaml_changelog,
+                    commit_msg=f"chore(docs): sync changelog for {proj_basename} [skip ci]",
+                    author_name=author_name_cfg,
+                    author_email=author_email_cfg
+                )
+            except Exception as dep_e:
+                logger.warning(f"Failed to push to deployment repo: {dep_e}")
+                
+            if audit_log_id:
+                with self._get_db_session(write=True) as session:
+                    SQLWriter(session).update_git_release_audit_log(audit_log_id, status="SUCCESS")
+                    
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"✅ Successfully pushed changelog to {request.project_name} on branch {request.target_branch} (via MR !{mr_iid}) and deployment repo.")
+        except Exception as e:
+            logger.error(f"[GitPushChangelog] Failed to push changelog: {e}", exc_info=True)
+            if audit_log_id:
+                with self._get_db_session(write=True) as session:
+                    SQLWriter(session).update_git_release_audit_log(audit_log_id, status="FAILED", error_message=str(e))
+            yield hau_pb2.GitPushChangelogResponse(success=False, message=str(e))

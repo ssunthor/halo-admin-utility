@@ -222,10 +222,16 @@ class ChangelogOrchestrator:
             return
             
         ordered_commits = []
+        found_start_commit = False if start_commit else True
         for line in lines:
             parts = line.split('|', 3)
             if len(parts) != 4: continue
             date_str, commit_hash, raw_author, subject = parts
+            
+            if not found_start_commit:
+                if commit_hash.startswith(start_commit):
+                    found_start_commit = True
+                continue
             
             if (subject.startswith("chore(docs):") or 
                 subject.startswith("chore(release):") or 

@@ -49,7 +49,7 @@ class GitPipelineManager:
                 time.sleep(2)
                 
             remove_source = not keep_branch
-            merge_msg = f"{commit_message}\n\n[skip ci]"
+            merge_msg = commit_message
             
             try:
                 if mr.detailed_merge_status == "mergeable" and not active_pipeline:
@@ -79,13 +79,19 @@ class GitPipelineManager:
             for _ in range(15):
                 if mr_iid:
                     mr = project.mergerequests.get(mr_iid)
-                    pipelines = mr.pipelines.list()
-                    if pipelines:
-                        latest_pipeline = pipelines[0]
-                        created_at = datetime.fromisoformat(latest_pipeline.created_at.replace('Z', '+00:00'))
-                        if (datetime.now(timezone.utc) - created_at) < timedelta(seconds=30) or latest_pipeline.status in ['running', 'pending', 'created']:
-                            pipeline = project.pipelines.get(latest_pipeline.id)
+                    if mr.state == 'merged' and mr.merge_commit_sha:
+                        pipelines = project.pipelines.list(ref=mr.target_branch, sha=mr.merge_commit_sha, order_by='id', sort='desc')
+                        if pipelines:
+                            pipeline = project.pipelines.get(pipelines[0].id)
                             break
+                    else:
+                        pipelines = mr.pipelines.list()
+                        if pipelines:
+                            latest_pipeline = pipelines[0]
+                            created_at = datetime.fromisoformat(latest_pipeline.created_at.replace('Z', '+00:00'))
+                            if (datetime.now(timezone.utc) - created_at) < timedelta(seconds=30) or latest_pipeline.status in ['running', 'pending', 'created']:
+                                pipeline = project.pipelines.get(latest_pipeline.id)
+                                break
                 elif ref:
                     pipelines = project.pipelines.list(ref=ref, order_by='id', sort='desc')
                     if pipelines:
@@ -94,7 +100,7 @@ class GitPipelineManager:
                         if (datetime.now(timezone.utc) - created_at) < timedelta(seconds=30) or latest_pipeline.status in ['running', 'pending', 'created']:
                             pipeline = project.pipelines.get(latest_pipeline.id)
                             break
-            time.sleep(1)
+                time.sleep(1)
             
         if not pipeline:
             yield "No active pipeline found after 15 seconds."

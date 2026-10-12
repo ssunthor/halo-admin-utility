@@ -310,7 +310,9 @@ class ReleaseOrchestrator:
                 yield f"Running deep historical check on '{target_branch}' to detect rogue commits..."
                 full_backfill_yaml = None
                 latest_feature_branch = None
-                for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_date=start_date, has_existing=bool(existing_yaml.strip())):
+                last_cl_commit_res = subprocess.run(['git', 'log', '-1', '--first-parent', '--format=%H', 'docs/CHANGELOG.yaml'], cwd=repo_local_path, capture_output=True, text=True)
+                last_cl_commit = last_cl_commit_res.stdout.strip()
+                for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_commit=last_cl_commit if last_cl_commit else None, start_date=start_date if not last_cl_commit else None, has_existing=bool(existing_yaml.strip())):
                     if isinstance(item, dict):
                         if "incremental_yaml" in item:
                             full_backfill_yaml = item["incremental_yaml"]
@@ -501,7 +503,11 @@ class ReleaseOrchestrator:
         existing_yaml = open(cl_path, 'r').read() if os.path.exists(cl_path) else ""
         source_version, _ = self._get_top_version_and_date(existing_yaml)
         
-        target_raw = self.gitlab_manager.fetch_raw_yaml(project_name, 'docs/CHANGELOG.yaml', branch=target_branch)
+        try:
+            target_raw = self.gitlab_manager.fetch_raw_yaml(project_name, 'docs/CHANGELOG.yaml', branch=target_branch)
+        except Exception:
+            target_raw = ""
+            
         target_version, _ = self._get_top_version_and_date(target_raw)
 
         tv = parse_version(target_version)

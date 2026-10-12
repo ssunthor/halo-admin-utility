@@ -430,6 +430,29 @@ def git_release(ctx, project, source, target, skip_changelog, delete_branch, deb
     except Exception as e:
         click.secho(f"gRPC Error: {str(e)}", fg="red")
 
+@git_cli.command(name="trigger")
+@click.option('--project', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
+@click.option('--ref', required=True, help="Branch or tag name to run the pipeline on")
+@click.pass_context
+def git_trigger(ctx, project, ref):
+    """Manually triggers a pipeline for a specific branch or tag."""
+    import gitlab
+    config = ctx.obj['config']
+    url = config['external_services']['gitlab']['url']
+    token = config['external_services']['gitlab'].get('bot_token')
+    
+    gl = gitlab.Gitlab(url, private_token=token, ssl_verify=False)
+    try:
+        proj = gl.projects.get(project)
+        click.echo(f"Triggering pipeline for '{project}' on ref '{ref}'...")
+        pipeline = proj.pipelines.create({'ref': ref})
+        click.secho(f"✅ Pipeline #{pipeline.id} triggered successfully!", fg='green')
+        click.echo(f"Web URL: {pipeline.web_url}")
+        click.echo(f"\nTo monitor this pipeline, run:")
+        click.echo(f"python3 halo_admin_utility.py git retry --project {project} --pipeline {pipeline.id} --author <your_name>")
+    except Exception as e:
+        click.secho(f"❌ Failed to trigger pipeline: {e}", fg='red')
+
 @git_cli.command(name="retry")
 @click.option('--project', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
 @click.option('--pipeline', type=int, help="ID of the pipeline to retry")

@@ -242,7 +242,7 @@ class ChangelogOrchestrator:
                 
             author = self._format_author(raw_author)
             
-            if start_date and date_str <= start_date:
+            if not start_commit and start_date and date_str <= start_date:
                 continue
                 
             is_merge = subject.startswith("Merge branch") or subject.startswith("Merge pull request")

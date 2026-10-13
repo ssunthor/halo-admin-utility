@@ -9,6 +9,7 @@
 # - "🔒 Security & Auth"
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
+---
 - version: 0.2.9
   date: "2026-09-25"
   author: "Martin Kecka"
@@ -23,7 +24,6 @@
       - 'Added error handling to prevent crashes when `CHANGELOG.yaml` is missing on the target branch during release orchestration.'
       - 'Fixed a polling loop timing issue in `GitPipelineManager` to ensure consistent pipeline status checks.'
 
----
 - version: 0.2.8
   date: "2026-09-25"
   author: "Martin Kecka"

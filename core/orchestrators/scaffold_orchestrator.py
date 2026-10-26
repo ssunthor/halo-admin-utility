@@ -38,15 +38,7 @@ class ScaffoldOrchestrator:
 
         # 1.5. Pre-flight Check: Verify in NetBox and get basic info
         yield "Verifying tenant in NetBox..."
-        netbox_config = self.config.get('external_services', {}).get('netbox', {})
-        nb_url = netbox_config.get('url', '')
-        nb_token = netbox_config.get('token', '')
-        nb_verify_ssl = netbox_config.get('verify_ssl', False)
-        
-        if not nb_url or not nb_token:
-            raise ValueError("Netbox URL or token not configured in settings.yaml")
-            
-        nb_client = NetboxClient(url=nb_url, token=nb_token, verify_ssl=nb_verify_ssl)
+        nb_client = NetboxClient.from_config(self.config)
         
         actual_netbox_slug = netbox_slug if netbox_slug else (f"{tenant}-{env}" if env else tenant)
         if not netbox_slug and is_internal:

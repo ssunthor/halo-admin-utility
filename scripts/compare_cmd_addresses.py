@@ -34,16 +34,7 @@ def main():
     print("Initializing Connectors...")
     init_cmc_connector(config)
     
-    netbox_config = config.get('external_services', {}).get('netbox', {})
-    nb_url = netbox_config.get('url', '')
-    nb_token = netbox_config.get('token', '')
-    verify_ssl = netbox_config.get('verify_ssl', False)
-    
-    if not nb_url or not nb_token:
-        print("Netbox URL or token not configured in settings.yaml")
-        sys.exit(1)
-        
-    nb_client = NetboxClient(url=nb_url, token=nb_token, verify_ssl=verify_ssl)
+    nb_client = NetboxClient.from_config(config)
     
     print(f"Fetching devices for tenant: {args.tenant}...")
     devices = nb_client.get_devices(tenant=args.tenant)

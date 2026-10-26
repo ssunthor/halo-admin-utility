@@ -1,6 +1,6 @@
 module_info:
   name: "HALO Admin Utility"
-  version: "0.2.9"
+  version: "0.2.10"
   acronym: "HAU"
   category: "Utility"
   description: "Primary operational control plane to provision, govern, and monitor HALO customer tenants."
@@ -58,7 +58,6 @@ external_services:
     dependency_name: "netbox_rest_api"
     type: "rest_api"
     url: "https://netbox.gt-t.net"
-    token: "1d97e4548e5c8ae59b1b59f13be062e4880f0a48"
 
 
 rancher_clusters:
@@ -77,6 +76,7 @@ rancher_clusters:
 
 vault_paths:
   rancher_admin: "rancher/{loc}/system/gia_ai"
+  netbox: "netbox/external/shared/gia_ai"
 
 auth:
   auth_url: "https://keycloak-aif.gt-t.net/realms/aif-llm/protocol/openid-connect/token"

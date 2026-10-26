@@ -20,6 +20,7 @@ class VaultClient:
         session.verify = self.verify
 
         self.client = self._authenticate(session)
+        self._secret_cache = {}
 
     def _authenticate(self, session):
         try:
@@ -32,6 +33,32 @@ class VaultClient:
         except Exception as e:
             logger.error(f"Vault authentication failed: {e}")
             raise
+
+    def get_secret(self, path: str, mount_point: str = "secret") -> dict:
+        """Fetch secret data from Vault KV v2."""
+        cache_key = f"{mount_point}:{path}"
+        if cache_key in self._secret_cache:
+            return self._secret_cache[cache_key]
+
+        try:
+            response = self.client.secrets.kv.v2.read_secret_version(
+                mount_point=mount_point,
+                path=path
+            )
+            data = response.get('data', {}).get('data', {})
+            self._secret_cache[cache_key] = data
+            return data
+        except Exception as e:
+            logger.error(f"Failed to fetch secret from Vault at '{mount_point}/{path}': {e}")
+            raise
+
+    def get_netbox_token(self, path: str = "netbox/external/shared/gia_ai", mount_point: str = "secret") -> str:
+        """Fetch NetBox API token from Vault."""
+        data = self.get_secret(path, mount_point=mount_point)
+        token = data.get('token')
+        if not token:
+            raise ValueError(f"Vault secret at '{mount_point}/{path}' does not contain 'token'")
+        return token
 
     def get_rancher_tokens(self, path_template, locations, mount_point="secret"):
         """Fetches the Rancher tokens for clusters across multiple locations dynamically."""

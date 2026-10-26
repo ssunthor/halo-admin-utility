@@ -10,6 +10,16 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: 0.2.10
+  date: "2026-10-26"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '🔒 Security & Auth'
+      'items':
+      - '[NEEDS_DOCS] Migrated NetBox API token from static configuration in settings.yaml to dynamic retrieval from HashiCorp Vault (path: ''netbox/external/shared/gia_ai'') via AppRole authentication.'
+      - '[NEEDS_DOCS] Added get_secret and get_netbox_token methods to VaultClient with in-memory caching.'
+      - '[NEEDS_DOCS] Added from_config factory method to NetboxClient and updated NetboxAuditManager, ScaffoldOrchestrator, and scripts to resolve Vault credentials dynamically.'
+
 - version: 0.2.9
   date: "2026-09-25"
   author: "Martin Kecka"

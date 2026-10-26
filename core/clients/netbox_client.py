@@ -7,6 +7,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
 
 class NetboxClient:
+    _cached_token = None
+
     def __init__(self, url: str, token: str, verify_ssl: bool = False):
         self.url = url.rstrip('/')
         self.token = token
@@ -15,6 +17,34 @@ class NetboxClient:
             "Authorization": f"Token {self.token}",
             "Accept": "application/json"
         }
+
+    @classmethod
+    def from_config(cls, config: dict, vault_client=None):
+        """Factory method to initialize NetboxClient using Vault credentials or fallback to static settings."""
+        netbox_cfg = config.get('external_services', {}).get('netbox', {})
+        url = netbox_cfg.get('url')
+        verify_ssl = netbox_cfg.get('verify_ssl', False)
+        token = netbox_cfg.get('token')
+
+        if not url:
+            raise ValueError("Netbox URL not configured in settings.yaml")
+
+        # Dynamically fetch token from Vault if not present statically
+        if not token:
+            if cls._cached_token:
+                token = cls._cached_token
+            else:
+                vault_cfg = config.get('external_services', {}).get('vault')
+                if not vault_cfg:
+                    raise ValueError("Vault configuration missing in settings.yaml and no static Netbox token provided")
+
+                from core.clients.vault_client import VaultClient
+                vault_path = config.get('vault_paths', {}).get('netbox', 'netbox/external/shared/gia_ai')
+                vc = vault_client or VaultClient(vault_cfg)
+                token = vc.get_netbox_token(path=vault_path)
+                cls._cached_token = token
+
+        return cls(url=url, token=token, verify_ssl=verify_ssl)
 
     def _paginate(self, endpoint: str, params: dict):
         results = []

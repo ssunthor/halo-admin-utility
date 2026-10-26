@@ -10,17 +10,9 @@ class NetboxAuditManager:
     def __init__(self, config: dict):
         self.config = config
         init_cmc_connector(self.config)
-        
-        netbox_config = self.config.get('external_services', {}).get('netbox', {})
-        self.nb_url = netbox_config.get('url', '')
-        self.nb_token = netbox_config.get('token', '')
-        self.verify_ssl = netbox_config.get('verify_ssl', False)
-        
+
     def audit_tenant(self, tenant: str, ip_audit: bool = False):
-        if not self.nb_url or not self.nb_token:
-            raise ValueError("Netbox URL or token not configured in settings.yaml")
-            
-        client = NetboxClient(url=self.nb_url, token=self.nb_token, verify_ssl=self.verify_ssl)
+        client = NetboxClient.from_config(self.config)
         
         # Fetch data
         logger.info(f"Fetching devices and VMs for tenant: {tenant}")

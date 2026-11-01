@@ -583,10 +583,13 @@ class SeraStandardServiceImpl(sera_standard_pb2_grpc.SeraAppServiceServicer):
             acronym = self.module_info.get('acronym', '').lower()
             doc_path = os.path.join(self.base_dir, 'docs', f'{acronym}_design.md')
             if not os.path.exists(doc_path):
+                dir_name = os.path.basename(os.path.abspath(self.base_dir)).lower()
+                doc_path = os.path.join(self.base_dir, 'docs', f'{dir_name}_design.md')
+            if not os.path.exists(doc_path):
                 doc_path = os.path.join(self.base_dir, 'README.md')
                 
             if os.path.exists(doc_path):
-                with open(doc_path, 'r') as f:
+                with open(doc_path, 'r', encoding='utf-8') as f:
                     return sera_standard_pb2.DocsResponse(raw_markdown=f.read())
             return sera_standard_pb2.DocsResponse(raw_markdown="# Documentation not found")
         except Exception as e:

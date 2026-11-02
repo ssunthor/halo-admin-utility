@@ -78,6 +78,8 @@ class SQLWriter:
         for p in data.get("projects", []):
             project_path = p.get("fullPath") or p.get("path")
             project_name = p.get("name")
+            repo_path = p.get("repo_path") or project_path
+            subpath = p.get("subpath") or ""
             
             if not project_path:
                 continue
@@ -93,12 +95,17 @@ class SQLWriter:
                 project = GitProject(
                     project_path=project_path,
                     project_name=project_name,
+                    repo_path=repo_path,
+                    subpath=subpath,
                     project_type=ptype,
                     native_releases=p.get("native_releases", [])
                 )
                 self.session.add(project)
                 self.session.flush()
             else:
+                project.project_name = project_name
+                project.repo_path = repo_path
+                project.subpath = subpath
                 project.native_releases = p.get("native_releases", [])
                 self.session.flush()
                 

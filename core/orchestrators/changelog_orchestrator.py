@@ -95,14 +95,15 @@ class ChangelogOrchestrator:
         
         return content
         
-    def generate_for_commits(self, repo_local_path: str, start_commit: str, end_commit: str, author: str, date_str: str, version: str, commits_list: list = None):
+    def generate_for_commits(self, repo_local_path: str, start_commit: str, end_commit: str, author: str, date_str: str, version: str, commits_list: list = None, subpath: str = ""):
         """
         Orchestrates the changelog generation for a specific commit range.
         If the diff is too large, it automatically falls back to a Map-Reduce extraction approach.
         Yields progress strings and finally a dict with {"final_yaml": ...}
         """
+        target_pathspec = subpath if subpath else '.'
         diff_res = subprocess.run(
-            ['git', 'diff', start_commit, end_commit, '--', '.', ':(exclude)package-lock.json', ':(exclude)yarn.lock', ':(exclude)pnpm-lock.yaml', ':(exclude)*changelog.yaml', ':(exclude)*CHANGELOG.yaml', ':(exclude)*.md'],
+            ['git', 'diff', start_commit, end_commit, '--', target_pathspec, ':(exclude)package-lock.json', ':(exclude)yarn.lock', ':(exclude)pnpm-lock.yaml', ':(exclude)*changelog.yaml', ':(exclude)*CHANGELOG.yaml', ':(exclude)*.md'],
             cwd=repo_local_path, capture_output=True, text=True
         )
         
@@ -130,8 +131,11 @@ class ChangelogOrchestrator:
                 if commits_list:
                     commit_hashes = commits_list.copy()
                 else:
+                    log_cmd = ['git', 'log', f"{start_commit}..{end_commit}", '--format=%H']
+                    if subpath:
+                        log_cmd.extend(['--', subpath])
                     commits_res = subprocess.run(
-                        ['git', 'log', f"{start_commit}..{end_commit}", '--format=%H'],
+                        log_cmd,
                         cwd=repo_local_path, capture_output=True, text=True
                     )
                     commit_hashes = [c for c in commits_res.stdout.strip().split('\n') if c]
@@ -150,8 +154,11 @@ class ChangelogOrchestrator:
                     if parent_res.returncode != 0 or not parent_hash:
                         parent_hash = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
                     
+                    files_cmd = ['git', 'diff', '--name-only', parent_hash, commit_hash]
+                    if subpath:
+                        files_cmd.extend(['--', subpath])
                     files_res = subprocess.run(
-                        ['git', 'diff', '--name-only', parent_hash, commit_hash],
+                        files_cmd,
                         cwd=repo_local_path, capture_output=True, text=True
                     )
                     files = [f for f in files_res.stdout.strip().split('\n') if f]
@@ -204,11 +211,14 @@ class ChangelogOrchestrator:
             logger.error(f"Failed to generate changelog: {e}")
             raise e
 
-    def run_backfill(self, repo_local_path: str, branch: str, start_version: str = "0.1.0", start_commit: str = None, start_date: str = None, has_existing: bool = True, debug_run: bool = False):
-        yield f"Analyzing git history for on branch '{branch}'..."
+    def run_backfill(self, repo_local_path: str, branch: str, start_version: str = "0.1.0", start_commit: str = None, start_date: str = None, has_existing: bool = True, debug_run: bool = False, subpath: str = ""):
+        yield f"Analyzing git history for on branch '{branch}'{f' (subpath: {subpath})' if subpath else ''}..."
         
+        log_cmd = ['git', 'log', '--first-parent', branch, '--date=short', '--format=%ad|%H|%an|%s', '--reverse']
+        if subpath:
+            log_cmd.extend(['--', subpath])
         result = subprocess.run(
-            ['git', 'log', '--first-parent', branch, '--date=short', '--format=%ad|%H|%an|%s', '--reverse'],
+            log_cmd,
             cwd=repo_local_path, capture_output=True, text=True
         )
         
@@ -321,7 +331,8 @@ class ChangelogOrchestrator:
                     author=author,
                     date_str=date_str,
                     version=current_version,
-                    commits_list=commit_info['commits']
+                    commits_list=commit_info['commits'],
+                    subpath=subpath
                 ):
                     if isinstance(update, dict) and "final_yaml" in update:
                         final_yaml = update["final_yaml"]
@@ -397,7 +408,7 @@ class ChangelogOrchestrator:
 
         yield {"final_yaml": final_doc, "latest_feature_branch": latest_feature_branch}
 
-    def generate_from_branch(self, repo_local_path: str, branch_name: str, project_name: str) -> str:
+    def generate_from_branch(self, repo_local_path: str, branch_name: str, project_name: str, subpath: str = "") -> str:
         date_res = subprocess.run(
             ['git', 'log', '-1', '--format=%ad', '--date=short', 'HEAD'], 
             cwd=repo_local_path, capture_output=True, text=True
@@ -417,7 +428,8 @@ class ChangelogOrchestrator:
             end_commit='HEAD',
             author=merge_author,
             date_str=merge_date,
-            version="UNKNOWN"
+            version="UNKNOWN",
+            subpath=subpath
         )
         
         final_yaml = None

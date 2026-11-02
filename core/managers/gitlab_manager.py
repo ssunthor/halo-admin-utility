@@ -59,12 +59,37 @@ class GitlabManager:
                 docs[item['name']] = base64.b64decode(f.content).decode('utf-8')
         return docs
 
-    def resolve_local_repo_path(self, project_name: str, local_base: str) -> str:
-        project_path_cfg = self.config.get('project_path', 'ai/halo')
-        rel_path = project_name
-        if rel_path.startswith(project_path_cfg + "/"):
-            rel_path = rel_path[len(project_path_cfg) + 1:]
-        return os.path.join(local_base, rel_path)
+    def _get_group_local_base(self, group_path: str, local_base: str = None) -> str:
+        base_clone = local_base or self.config.get('local_clone_path', '/ai/utilities/halo_admin_utility/cache/halo')
+        cache_root = self.config.get('local_cache_root') or os.path.dirname(base_clone.rstrip('/'))
+        if group_path == 'ai/halo':
+            return base_clone
+        group_short = group_path.split('/')[-1]
+        return os.path.join(cache_root, group_short)
+
+    def resolve_local_repo_path(self, project_name: str, local_base: str = None) -> str:
+        base_clone = local_base or self.config.get('local_clone_path', '/ai/utilities/halo_admin_utility/cache/halo')
+        project_paths = self.config.get('project_paths') or [self.config.get('project_path', 'ai/halo')]
+        
+        candidate_dir = None
+        for grp in project_paths:
+            if project_name.startswith(grp + "/"):
+                rel_path = project_name[len(grp) + 1:]
+                grp_base = self._get_group_local_base(grp, base_clone)
+                candidate_dir = os.path.join(grp_base, rel_path)
+                break
+                
+        if not candidate_dir:
+            project_path_cfg = self.config.get('project_path', 'ai/halo')
+            grp_base = self._get_group_local_base(project_path_cfg, base_clone)
+            candidate_dir = os.path.join(grp_base, project_name)
+            
+        # If candidate_dir is a virtual service subpath inside a domain monorepo, walk up to find .git root
+        if not os.path.exists(os.path.join(candidate_dir, '.git')):
+            parent_dir = os.path.dirname(candidate_dir)
+            if os.path.exists(os.path.join(parent_dir, '.git')):
+                return parent_dir
+        return candidate_dir
 
     def parse_local_documentation_tree(self, cache_dir: str) -> list:
         docs_list = []
@@ -142,24 +167,36 @@ class GitlabManager:
 
     def sync_group_cache(self, branch_override=None):
         token = self.config.get('bot_token')
-        project_path = self.config.get('project_path')
+        project_paths = self.config.get('project_paths') or [self.config.get('project_path', 'ai/halo')]
+        ignored_projects = set(self.config.get('ignored_projects', []))
         local_path = self.config.get('local_clone_path')
         domain = self.url.replace('https://', '').replace('http://', '')
         
         gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
-        group = gl.groups.get(project_path)
-        projects = group.projects.list(include_subgroups=True, all=True)
-        os.makedirs(local_path, exist_ok=True)
+        projects_with_grp = []
+        seen_ids = set()
+        for grp_path in project_paths:
+            try:
+                group = gl.groups.get(grp_path)
+                grp_base = self._get_group_local_base(grp_path, local_path)
+                os.makedirs(grp_base, exist_ok=True)
+                for p in group.projects.list(include_subgroups=True, all=True):
+                    if p.id not in seen_ids and p.path_with_namespace not in ignored_projects:
+                        seen_ids.add(p.id)
+                        projects_with_grp.append((p, grp_path, grp_base))
+            except Exception as e:
+                logger.warning(f"Failed to fetch projects for group {grp_path}: {e}")
         
         import concurrent.futures
         
-        def sync_project(p):
+        def sync_project(item):
+            p, grp_path, grp_base = item
             repo_url = f"https://oauth2:{token}@{domain}/{p.path_with_namespace}.git"
             rel_path = p.path_with_namespace
-            if rel_path.startswith(project_path + "/"):
-                rel_path = rel_path[len(project_path) + 1:]
+            if rel_path.startswith(grp_path + "/"):
+                rel_path = rel_path[len(grp_path) + 1:]
                 
-            repo_local_path = os.path.join(local_path, rel_path)
+            repo_local_path = os.path.join(grp_base, rel_path)
             target_pref = branch_override if branch_override else 'dev'
             if not os.path.exists(os.path.join(repo_local_path, '.git')):
                 ls_remote = subprocess.run(['git', 'ls-remote', '--heads', repo_url, target_pref], capture_output=True, text=True)
@@ -205,9 +242,9 @@ class GitlabManager:
                     return f"✅ Synced {p.path_with_namespace} (branch: {active_branch})"
 
         logs = []
-        if projects:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, len(projects))) as executor:
-                future_to_project = {executor.submit(sync_project, p): p for p in projects}
+        if projects_with_grp:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, len(projects_with_grp))) as executor:
+                future_to_project = {executor.submit(sync_project, item): item[0] for item in projects_with_grp}
                 for future in concurrent.futures.as_completed(future_to_project):
                     try:
                         logs.append(future.result())
@@ -219,56 +256,73 @@ class GitlabManager:
         
     def list_group_cache(self):
         local_path = self.config.get('local_clone_path')
-        if not local_path or not os.path.exists(local_path):
-            return "Cache directory does not exist. Run sync first."
+        project_paths = self.config.get('project_paths') or [self.config.get('project_path', 'ai/halo')]
+        ignored_projects = set(self.config.get('ignored_projects', []))
             
         token = self.config.get('bot_token')
-        project_path = self.config.get('project_path')
         domain = self.url.replace('https://', '').replace('http://', '')
         gl = gitlab.Gitlab(self.url, private_token=token, ssl_verify=False)
-        group = gl.groups.get(project_path)
-        projects = {p.path_with_namespace: p for p in group.projects.list(include_subgroups=True, all=True)}
+        
+        projects = {}
+        grp_bases = []
+        for grp_path in project_paths:
+            grp_base = self._get_group_local_base(grp_path, local_path)
+            if os.path.exists(grp_base):
+                grp_bases.append((grp_path, grp_base))
+            try:
+                group = gl.groups.get(grp_path)
+                for p in group.projects.list(include_subgroups=True, all=True):
+                    if p.path_with_namespace not in ignored_projects:
+                        projects[p.path_with_namespace] = p
+            except Exception:
+                pass
+                
+        if not grp_bases:
+            return "Cache directory does not exist. Run sync first."
             
         output = []
-        for root, dirs, files in os.walk(local_path):
-            if '.git' in dirs:
-                dirs.remove('.git')
-                repo_dir = root
-                
-                rel_dir = os.path.relpath(repo_dir, local_path)
-                full_project_path = f"{project_path}/{rel_dir}" if rel_dir != "." else project_path
-                
-                curr_res = subprocess.run(['git', 'branch', '--show-current'], cwd=repo_dir, capture_output=True, text=True)
-                active_branch = curr_res.stdout.strip()
-                
-                repo_url = f"https://oauth2:{token}@{domain}/{full_project_path}.git" if full_project_path in projects else None
-                if repo_url:
-                    subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=repo_dir, capture_output=True)
-                subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, capture_output=True)
-                
-                branch_res = subprocess.run(['git', 'branch', '-r'], cwd=repo_dir, capture_output=True, text=True)
-                branches = [b.strip().replace('origin/', '') for b in branch_res.stdout.split('\n') if b.strip() and '->' not in b]
-                branches = sorted(list(set(branches)))
-                
-                default_branch = projects[full_project_path].default_branch if full_project_path in projects else 'main'
-                
-                protected_branches = []
-                if full_project_path in projects:
-                    try:
-                        p = projects[full_project_path]
-                        real_p = gl.projects.get(p.id, lazy=True)
-                        protected_branches = [pb.name for pb in real_p.protectedbranches.list()]
-                    except Exception as e:
-                        pass
-                
-                repo_data = {
-                    "repository": full_project_path,
-                    "active_branch": active_branch,
-                    "default_branch": default_branch,
-                    "branches": branches,
-                    "protected_branches": protected_branches
-                }
-                output.append(repo_data)
+        for grp_path, grp_base in grp_bases:
+            for root, dirs, files in os.walk(grp_base):
+                if '.git' in dirs:
+                    dirs.remove('.git')
+                    repo_dir = root
+                    
+                    rel_dir = os.path.relpath(repo_dir, grp_base)
+                    full_project_path = f"{grp_path}/{rel_dir}" if rel_dir != "." else grp_path
+                    if full_project_path in ignored_projects:
+                        continue
+                    
+                    curr_res = subprocess.run(['git', 'branch', '--show-current'], cwd=repo_dir, capture_output=True, text=True)
+                    active_branch = curr_res.stdout.strip()
+                    
+                    repo_url = f"https://oauth2:{token}@{domain}/{full_project_path}.git" if full_project_path in projects else None
+                    if repo_url:
+                        subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url], cwd=repo_dir, capture_output=True)
+                    subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, capture_output=True)
+                    
+                    branch_res = subprocess.run(['git', 'branch', '-r'], cwd=repo_dir, capture_output=True, text=True)
+                    branches = [b.strip().replace('origin/', '') for b in branch_res.stdout.split('\n') if b.strip() and '->' not in b]
+                    branches = sorted(list(set(branches)))
+                    
+                    default_branch = projects[full_project_path].default_branch if full_project_path in projects else 'main'
+                    
+                    protected_branches = []
+                    if full_project_path in projects:
+                        try:
+                            p = projects[full_project_path]
+                            real_p = gl.projects.get(p.id, lazy=True)
+                            protected_branches = [pb.name for pb in real_p.protectedbranches.list()]
+                        except Exception as e:
+                            pass
+                    
+                    repo_data = {
+                        "repository": full_project_path,
+                        "active_branch": active_branch,
+                        "default_branch": default_branch,
+                        "branches": branches,
+                        "protected_branches": protected_branches
+                    }
+                    output.append(repo_data)
                 
         import json
         return json.dumps(output)
@@ -294,40 +348,43 @@ class GitlabManager:
 
     def push_group_cache(self, commit_msg):
         local_path = self.config.get('local_clone_path')
-        if not local_path or not os.path.exists(local_path):
+        project_paths = self.config.get('project_paths') or [self.config.get('project_path', 'ai/halo')]
+        grp_bases = [self._get_group_local_base(g, local_path) for g in project_paths if os.path.exists(self._get_group_local_base(g, local_path))]
+        if not grp_bases:
             raise RuntimeError("Cache directory does not exist. Run sync first.")
             
         author_name = self.config.get('bot_username', 'GIA AI Bot')
         author_email = "gia-ai@gtt.net"
             
         logs = []
-        for root, dirs, files in os.walk(local_path):
-            if '.git' in dirs:
-                dirs.remove('.git')
-                repo_dir = root
-                rel_dir = os.path.relpath(repo_dir, local_path)
-                
-                status_res = subprocess.run(['git', 'status', '--porcelain'], cwd=repo_dir, capture_output=True, text=True)
-                if status_res.stdout.strip():
-                    subprocess.run(['git', 'config', 'user.name', author_name], cwd=repo_dir)
-                    subprocess.run(['git', 'config', 'user.email', author_email], cwd=repo_dir)
-                    subprocess.run(['git', 'add', '.'], cwd=repo_dir)
+        for grp_base in grp_bases:
+            for root, dirs, files in os.walk(grp_base):
+                if '.git' in dirs:
+                    dirs.remove('.git')
+                    repo_dir = root
+                    rel_dir = os.path.relpath(repo_dir, grp_base)
                     
-                    commit_res = subprocess.run(['git', 'commit', '-m', commit_msg], cwd=repo_dir, capture_output=True, text=True)
-                    if commit_res.returncode != 0:
-                        logs.append(f"❌ Failed to commit {rel_dir}: {commit_res.stderr.strip()}")
-                        continue
+                    status_res = subprocess.run(['git', 'status', '--porcelain'], cwd=repo_dir, capture_output=True, text=True)
+                    if status_res.stdout.strip():
+                        subprocess.run(['git', 'config', 'user.name', author_name], cwd=repo_dir)
+                        subprocess.run(['git', 'config', 'user.email', author_email], cwd=repo_dir)
+                        subprocess.run(['git', 'add', '.'], cwd=repo_dir)
                         
-                    curr_res = subprocess.run(['git', 'branch', '--show-current'], cwd=repo_dir, capture_output=True, text=True)
-                    active_branch = curr_res.stdout.strip()
-                    
-                    push_res = subprocess.run(['git', 'push', 'origin', active_branch], cwd=repo_dir, capture_output=True, text=True)
-                    if push_res.returncode != 0:
-                        logs.append(f"❌ Failed to push {rel_dir} (branch: {active_branch}): {push_res.stderr.strip()}")
+                        commit_res = subprocess.run(['git', 'commit', '-m', commit_msg], cwd=repo_dir, capture_output=True, text=True)
+                        if commit_res.returncode != 0:
+                            logs.append(f"❌ Failed to commit {rel_dir}: {commit_res.stderr.strip()}")
+                            continue
+                            
+                        curr_res = subprocess.run(['git', 'branch', '--show-current'], cwd=repo_dir, capture_output=True, text=True)
+                        active_branch = curr_res.stdout.strip()
+                        
+                        push_res = subprocess.run(['git', 'push', 'origin', active_branch], cwd=repo_dir, capture_output=True, text=True)
+                        if push_res.returncode != 0:
+                            logs.append(f"❌ Failed to push {rel_dir} (branch: {active_branch}): {push_res.stderr.strip()}")
+                        else:
+                            logs.append(f"✅ Pushed {rel_dir} (branch: {active_branch})")
                     else:
-                        logs.append(f"✅ Pushed {rel_dir} (branch: {active_branch})")
-                else:
-                    logs.append(f"ℹ️ No changes in {rel_dir}")
+                        logs.append(f"ℹ️ No changes in {rel_dir}")
                     
         return "\n".join(logs)
 

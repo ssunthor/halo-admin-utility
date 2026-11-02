@@ -10,6 +10,25 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: 0.4.0
+  date: "2026-11-02"
+  author: "Martin Kecka"
+  changes:
+    - 'category': '🚀 Architecture & Infrastructure'
+      'items':
+      - 'Added multi-group and domain monorepo support across `ai/defense-halo` and legacy `ai/halo` repositories while ignoring `ai/defense-halo/k8s`.'
+      - 'Extended the `GitProject` database schema with `repo_path` and `subpath` columns to virtualize individual services inside domain monorepos as distinct trackable projects.'
+    - 'category': '✨ New Features & Enhancements'
+      'items':
+      - 'Enhanced `GitInventoryManager` to automatically discover domain monorepo services by parsing root `.gitlab-ci.yml` trigger includes, child `.gitlab-ci.yml` container build variables, and sub-repository container registries.'
+      - 'Updated project resolution in `SQLReader` so short project names default to `ai/defense-halo` while full paths query the exact repository or domain group.'
+      - 'Updated `ChangelogOrchestrator` and `ReleaseOrchestrator` to scope `git log` and `git diff` operations to service subpaths (`<subpath>/docs/CHANGELOG.yaml`) and prefix Git tags and GitLab Releases on shared domain repositories (`<service>-vX.Y.Z`).'
+      - 'Enhanced `GitPipelineManager` to monitor parent-child bridge pipelines and downstream child jobs in domain monorepos.'
+    - 'category': '🐛 Bug Fixes & Resilience'
+      'items':
+      - 'Qualified active deployment counts by container registry path (`<registry_path>/<image>:<tag>`) to prevent cross-group collisions between `ai/defense-halo` and `ai/halo`, and standardized deployment counts to reflect unique deployed tenant namespaces.'
+      - 'Scoped `ContainerRegistryManager.delete_container_tag` to the exact service container repository so deleting a tag in a domain monorepo never affects sibling service registries.'
+
 - version: 0.3.0
   date: "2026-10-26"
   author: "Martin Kecka"

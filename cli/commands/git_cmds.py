@@ -431,7 +431,7 @@ def git_release(ctx, project, source, target, skip_changelog, delete_branch, deb
         click.secho(f"gRPC Error: {str(e)}", fg="red")
 
 @git_cli.command(name="trigger")
-@click.option('--project', required=True, help="Project name (e.g. ai/halo/pipelines/netflow-dfp)")
+@click.option('--project', required=True, help="Project name (e.g. ai/defense-halo/core or ai/defense-halo/core/backend)")
 @click.option('--ref', required=True, help="Branch or tag name to run the pipeline on")
 @click.pass_context
 def git_trigger(ctx, project, ref):
@@ -443,8 +443,15 @@ def git_trigger(ctx, project, ref):
     
     gl = gitlab.Gitlab(url, private_token=token, ssl_verify=False)
     try:
-        proj = gl.projects.get(project)
-        click.echo(f"Triggering pipeline for '{project}' on ref '{ref}'...")
+        try:
+            proj = gl.projects.get(project)
+        except gitlab.exceptions.GitlabGetError as e:
+            if e.response_code == 404 and '/' in project:
+                parent_proj = project.rsplit('/', 1)[0]
+                proj = gl.projects.get(parent_proj)
+            else:
+                raise e
+        click.echo(f"Triggering pipeline for '{proj.path_with_namespace}' on ref '{ref}'...")
         pipeline = proj.pipelines.create({'ref': ref})
         click.secho(f"✅ Pipeline #{pipeline.id} triggered successfully!", fg='green')
         click.echo(f"Web URL: {pipeline.web_url}")

@@ -104,6 +104,8 @@ class ReleaseOrchestrator:
         sql_writer = None
         ctx = None
         
+        repo_path = project_name
+        subpath = ""
         if self.use_db:
             ctx = get_db_session(read_only=False)
             session = ctx.__enter__()
@@ -111,7 +113,15 @@ class ReleaseOrchestrator:
                 sql_reader = SQLReader(session)
                 sql_writer = SQLWriter(session)
                 
-                project_name = sql_reader.resolve_project_path(project_name)
+                proj_obj = sql_reader.resolve_project_obj(project_name)
+                if proj_obj:
+                    project_name = proj_obj.project_path
+                    repo_path = proj_obj.repo_path or project_name
+                    subpath = proj_obj.subpath or ""
+                else:
+                    project_name = sql_reader.resolve_project_path(project_name)
+                    repo_path = project_name
+                    
                 active_lock = sql_reader.get_active_git_release_audit_log(project_name)
                 
                 if active_lock:
@@ -135,7 +145,7 @@ class ReleaseOrchestrator:
 
         try:
             trace_logs = []
-            for item in self._run_release_internal(project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, sql_reader, sql_writer, dry_run, release_only, skip_rogue_check, use_deployment_changelog):
+            for item in self._run_release_internal(project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, sql_reader, sql_writer, dry_run, release_only, skip_rogue_check, use_deployment_changelog, repo_path=repo_path, subpath=subpath):
                 trace_logs.append(item)
                 if isinstance(item, dict) and not item.get("success", True):
                     if audit_log and sql_writer:
@@ -165,7 +175,11 @@ class ReleaseOrchestrator:
                 except Exception:
                     pass
 
-    def _run_release_internal(self, project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, sql_reader, sql_writer, dry_run, release_only, skip_rogue_check, use_deployment_changelog):
+    def _run_release_internal(self, project_name, source_branch, target_branch, skip_changelog, keep_branch, debug, audit_log, author, sql_reader, sql_writer, dry_run, release_only, skip_rogue_check, use_deployment_changelog, repo_path=None, subpath=""):
+        repo_path = repo_path or project_name
+        subpath = subpath or ""
+        cl_rel_path = f"{subpath}/docs/CHANGELOG.yaml" if subpath else "docs/CHANGELOG.yaml"
+        proj_basename = project_name.split('/')[-1]
         mode_str = "[DRY-RUN] " if dry_run else ""
         
         if release_only:
@@ -176,6 +190,12 @@ class ReleaseOrchestrator:
         yield "Syncing Git Inventory to ensure latest state before release..."
         try:
             self.inventory_manager.sync_database_inventory(sql_reader, sql_writer, project_name)
+            if sql_reader:
+                proj_obj = sql_reader.resolve_project_obj(project_name)
+                if proj_obj:
+                    repo_path = proj_obj.repo_path or project_name
+                    subpath = proj_obj.subpath or ""
+                    cl_rel_path = f"{subpath}/docs/CHANGELOG.yaml" if subpath else "docs/CHANGELOG.yaml"
             yield "✅ Git Inventory successfully synced."
         except Exception as e:
             logger.error(f"[GitRelease] Pre-release inventory sync failed: {e}")
@@ -185,7 +205,7 @@ class ReleaseOrchestrator:
         author_email = "gia-ai@gtt.net"
         author_id = None
         if author:
-            resolved = self.gitlab_manager.resolve_user(project_name, author)
+            resolved = self.gitlab_manager.resolve_user(repo_path, author)
             if resolved and 'name' in resolved:
                 author_name = resolved['name']
                 author_email = resolved.get('email', f"{resolved['username']}@gtt.net")
@@ -198,8 +218,8 @@ class ReleaseOrchestrator:
                 return
 
         local_base = self.config['external_services']['gitlab']['local_clone_path']
-        repo_local_path = self.gitlab_manager.resolve_local_repo_path(project_name, local_base)
-        cl_path = os.path.join(repo_local_path, 'docs', 'CHANGELOG.yaml')
+        repo_local_path = self.gitlab_manager.resolve_local_repo_path(repo_path, local_base)
+        cl_path = os.path.join(repo_local_path, cl_rel_path)
         orchestrator = ChangelogOrchestrator(config=self.config)
 
         def _get_tag(v_str):
@@ -210,7 +230,7 @@ class ReleaseOrchestrator:
             return v
 
         if release_only:
-            self.gitlab_manager.checkout_project_branch(project_name, target_branch)
+            self.gitlab_manager.checkout_project_branch(repo_path, target_branch)
             is_main = target_branch in ['main', 'master']
             fetch_deployment_changelog = is_main or use_deployment_changelog
             
@@ -226,7 +246,10 @@ class ReleaseOrchestrator:
                     yield {"success": False, "message": "Source of truth changelog is empty."}
                     return
                     
-                date_res = subprocess.run(['git', 'log', '-1', '--format=%cs', f'origin/{target_branch}'], cwd=repo_local_path, capture_output=True, text=True)
+                date_cmd = ['git', 'log', '-1', '--format=%cs', f'origin/{target_branch}']
+                if subpath:
+                    date_cmd.extend(['--', subpath])
+                date_res = subprocess.run(date_cmd, cwd=repo_local_path, capture_output=True, text=True)
                 last_commit_date = date_res.stdout.strip()
                 
                 parsed_yaml = yaml.safe_load(deployment_yaml)
@@ -261,13 +284,16 @@ class ReleaseOrchestrator:
                 if dry_run:
                     yield f"[DRY-RUN] Would retag container to 'v{target_version}' and create Git release."
                 else:
-                    yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run)
+                    yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, repo_path=repo_path, subpath=subpath)
                 return
             else:
                 existing_yaml = open(cl_path, 'r').read() if os.path.exists(cl_path) else ""
                 start_version, start_date = self._get_top_version_and_date(existing_yaml)
                 
-                last_commit_res = subprocess.run(['git', 'log', '-1', '--format=%s'], cwd=repo_local_path, capture_output=True, text=True)
+                last_commit_cmd = ['git', 'log', '-1', '--format=%s']
+                if subpath:
+                    last_commit_cmd.extend(['--', subpath])
+                last_commit_res = subprocess.run(last_commit_cmd, cwd=repo_local_path, capture_output=True, text=True)
                 last_commit_msg = last_commit_res.stdout.strip()
                 
                 is_last_commit_release = (
@@ -295,7 +321,7 @@ class ReleaseOrchestrator:
                         yield {"success": True, "message": f"✅ Branch '{target_branch}' is already clean and fully documented. No release needed."}
                         return
                     else:
-                        is_active, p_status = self._check_active_pipeline(project_name, target_branch)
+                        is_active, p_status = self._check_active_pipeline(repo_path, target_branch)
                         if is_active:
                             yield {"success": False, "message": f"❌ Aborting: The branch '{target_branch}' currently has an active pipeline ({p_status}). Please wait for the container build to finish before retagging."}
                             return
@@ -304,15 +330,15 @@ class ReleaseOrchestrator:
                             yield f"[DRY-RUN] Would retag container to '{target_version_tag}' and create Git release."
                         else:
                             final_v = version_match.group(1) if version_match else start_version
-                            yield from self._finalize_artifacts(project_name, final_v, target_branch, target_branch, existing_yaml, audit_log, sql_writer, sql_reader, dry_run)
+                            yield from self._finalize_artifacts(project_name, final_v, target_branch, target_branch, existing_yaml, audit_log, sql_writer, sql_reader, dry_run, repo_path=repo_path, subpath=subpath)
                         return
 
                 yield f"Running deep historical check on '{target_branch}' to detect rogue commits..."
                 full_backfill_yaml = None
                 latest_feature_branch = None
-                last_cl_commit_res = subprocess.run(['git', 'log', '-1', '--first-parent', '--format=%H', 'docs/CHANGELOG.yaml'], cwd=repo_local_path, capture_output=True, text=True)
+                last_cl_commit_res = subprocess.run(['git', 'log', '-1', '--first-parent', '--format=%H', '--', cl_rel_path], cwd=repo_local_path, capture_output=True, text=True)
                 last_cl_commit = last_cl_commit_res.stdout.strip()
-                for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_commit=last_cl_commit if last_cl_commit else None, start_date=start_date if not last_cl_commit else None, has_existing=bool(existing_yaml.strip())):
+                for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_commit=last_cl_commit if last_cl_commit else None, start_date=start_date if not last_cl_commit else None, has_existing=bool(existing_yaml.strip()), subpath=subpath):
                     if isinstance(item, dict):
                         if "incremental_yaml" in item:
                             full_backfill_yaml = item["incremental_yaml"]
@@ -342,7 +368,7 @@ class ReleaseOrchestrator:
                         yield {"success": True, "message": f"✅ Branch '{target_branch}' is already clean and fully documented. No release needed."}
                         return
                     else:
-                        is_active, p_status = self._check_active_pipeline(project_name, target_branch)
+                        is_active, p_status = self._check_active_pipeline(repo_path, target_branch)
                         if is_active:
                             yield {"success": False, "message": f"❌ Aborting: The branch '{target_branch}' currently has an active pipeline ({p_status}). Please wait for the container build to finish before retagging."}
                             return
@@ -352,7 +378,7 @@ class ReleaseOrchestrator:
                             yield "\n[dry-run changelog]\n"
                             yield full_backfill_yaml
                         else:
-                            yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, full_backfill_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=None)
+                            yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, full_backfill_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=None, repo_path=repo_path, subpath=subpath)
                         return
                 existing_lines = existing_yaml.split('\n')
                 insert_idx = 0
@@ -382,7 +408,7 @@ class ReleaseOrchestrator:
                 yield f"[DRY-RUN] Would create branch '{sync_branch}', commit synced changelog up to v{target_version}, and push with ci.skip."
                 yield f"[DRY-RUN] Would create MR for '{sync_branch}' -> '{target_branch}' and auto-merge with [skip ci]."
                 yield f"[DRY-RUN] Would commit and sync changelog to deployment repo at 'docs/{proj_basename}/CHANGELOG.yaml'."
-                yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=full_backfill_yaml)
+                yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=full_backfill_yaml, repo_path=repo_path, subpath=subpath)
                 yield "\n[dry-run changelog]\n"
                 yield full_backfill_yaml
                 return
@@ -394,13 +420,13 @@ class ReleaseOrchestrator:
                 
             subprocess.run(['git', 'config', 'user.name', author_name], cwd=repo_local_path)
             subprocess.run(['git', 'config', 'user.email', author_email], cwd=repo_local_path)
-            subprocess.run(['git', 'add', 'docs/CHANGELOG.yaml'], cwd=repo_local_path)
+            subprocess.run(['git', 'add', cl_rel_path], cwd=repo_local_path)
             subprocess.run(['git', 'commit', f'--author={author_name} <{author_email}>', '-m', commit_msg_prefix], cwd=repo_local_path)
             subprocess.run(['git', 'push', '-o', 'ci.skip', '-u', 'origin', sync_branch], cwd=repo_local_path, capture_output=True)
 
             yield "Triggering environment sync merge (skipping CI)..."
             success, mr_iid, msg = self.pipeline_manager.create_and_merge_mr(
-                project_name, sync_branch, target_branch, f"{commit_msg_prefix}\n\n[skip ci]", keep_branch=False, assignee_id=author_id
+                repo_path, sync_branch, target_branch, f"{commit_msg_prefix}\n\n[skip ci]", keep_branch=False, assignee_id=author_id
             )
             if not success:
                 yield {"success": False, "message": f"Merge failed: {msg}"}
@@ -411,7 +437,7 @@ class ReleaseOrchestrator:
             
             yield "Waiting for merge to complete (skipping pipeline wait due to [skip ci])...."
             gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
-            project = gl.projects.get(project_name)
+            project = gl.projects.get(repo_path)
             merged = False
             for _ in range(30):
                 mr = project.mergerequests.get(mr_iid)
@@ -428,7 +454,6 @@ class ReleaseOrchestrator:
 
             proj_basename = project_name.split('/')[-1]
             yield f"Synchronizing updated changelog to deployment repository (docs/{proj_basename}/CHANGELOG.yaml)..."
-            proj_basename = project_name.split('/')[-1]
             if dry_run:
                 yield f"[DRY-RUN] Would commit and sync changelog for v{target_version} to deployment docs."
             else:
@@ -446,24 +471,24 @@ class ReleaseOrchestrator:
                 except Exception as e:
                     yield f"Warning: Failed to sync changelog to deployment repo: {e}"
 
-            is_active, p_status = self._check_active_pipeline(project_name, target_branch)
+            is_active, p_status = self._check_active_pipeline(repo_path, target_branch)
             if is_active:
                 yield {"success": False, "message": f"❌ Aborting: The branch '{target_branch}' currently has an active pipeline ({p_status}). Please wait for the container build to finish before retagging."}
                 return
 
-            yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=full_backfill_yaml)
+            yield from self._finalize_artifacts(project_name, target_version, target_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=full_backfill_yaml, repo_path=repo_path, subpath=subpath)
             return
 
         is_promotion = (source_branch == 'dev' and target_branch in ['main', 'master'])
 
         if not is_promotion and not skip_changelog and not skip_rogue_check:
             yield "Performing pre-flight rogue commit check on target branch..."
-            self.gitlab_manager.checkout_project_branch(project_name, target_branch)
+            self.gitlab_manager.checkout_project_branch(repo_path, target_branch)
             existing_yaml = open(cl_path, 'r').read() if os.path.exists(cl_path) else ""
             start_version, start_date = self._get_top_version_and_date(existing_yaml)
             
             check_yaml = None
-            for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_date=start_date, has_existing=bool(existing_yaml.strip())):
+            for item in orchestrator.run_backfill(repo_local_path, target_branch, start_version=start_version, start_date=start_date, has_existing=bool(existing_yaml.strip()), subpath=subpath):
                 if isinstance(item, dict) and "final_yaml" in item:
                     check_yaml = item["final_yaml"]
             
@@ -476,11 +501,11 @@ class ReleaseOrchestrator:
             yield "✅ Target branch is clean."
 
         yield f"Syncing local cache for '{source_branch}'..."
-        self.gitlab_manager.checkout_project_branch(project_name, source_branch)
+        self.gitlab_manager.checkout_project_branch(repo_path, source_branch)
 
         try:
             gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
-            project = gl.projects.get(project_name)
+            project = gl.projects.get(repo_path)
             compare = project.repository_compare(target_branch, source_branch)
             if not compare.get('commits'):
                 yield {"success": False, "message": f"❌ Aborting release: No new commits found in '{source_branch}' compared to '{target_branch}'. Branch is already merged."}
@@ -504,7 +529,7 @@ class ReleaseOrchestrator:
         source_version, _ = self._get_top_version_and_date(existing_yaml)
         
         try:
-            target_raw = self.gitlab_manager.fetch_raw_yaml(project_name, 'docs/CHANGELOG.yaml', branch=target_branch)
+            target_raw = self.gitlab_manager.fetch_raw_yaml(repo_path, cl_rel_path, branch=target_branch)
         except Exception:
             target_raw = ""
             
@@ -532,6 +557,7 @@ class ReleaseOrchestrator:
         if not skip_changelog:
             if is_promotion:
                 yield f"🚀 Promotion flow detected ({source_branch} -> {target_branch}). Bypassing generation and syncing exact state..."
+                os.makedirs(os.path.dirname(cl_path), exist_ok=True)
                 with open(cl_path, 'w') as f:
                     f.write(final_yaml)
                 if audit_log and sql_writer:
@@ -545,7 +571,8 @@ class ReleaseOrchestrator:
                     end_commit='HEAD',
                     author=author_name,
                     date_str=datetime.now().strftime("%Y-%m-%d"),
-                    version=next_version
+                    version=next_version,
+                    subpath=subpath
                 )
                 for item in generator:
                     if isinstance(item, dict) and "final_yaml" in item:
@@ -578,6 +605,7 @@ class ReleaseOrchestrator:
                     new_content += formatted_yaml + "\n\n" + "\n".join(existing_lines[insert_idx:])
                     final_yaml = new_content
                     
+                    os.makedirs(os.path.dirname(cl_path), exist_ok=True)
                     with open(cl_path, 'w') as f:
                         f.write(final_yaml)
 
@@ -587,7 +615,7 @@ class ReleaseOrchestrator:
             if dry_run:
                 yield f"[DRY-RUN] Would commit changelog and push to '{source_branch}'."
             else:
-                subprocess.run(['git', 'add', 'docs/CHANGELOG.yaml'], cwd=repo_local_path)
+                subprocess.run(['git', 'add', cl_rel_path], cwd=repo_local_path)
                 commit_res = subprocess.run(['git', 'commit', f'--author={author_name} <{author_email}>', '-m', f"chore(release): auto-generate changelog for v{version}"], cwd=repo_local_path, capture_output=True, text=True)
                 if commit_res.returncode != 0 and "nothing to commit" not in commit_res.stdout:
                     yield {"success": False, "message": f"Failed to commit changelog: {commit_res.stderr}"}
@@ -647,7 +675,7 @@ class ReleaseOrchestrator:
         else:
             yield "Triggering Merge via GitLab API..."
             success, mr_iid, msg = self.pipeline_manager.create_and_merge_mr(
-                project_name, source_branch, target_branch, commit_msg, keep_branch=keep_branch, assignee_id=author_id
+                repo_path, source_branch, target_branch, commit_msg, keep_branch=keep_branch, assignee_id=author_id
             )
             if not success:
                 yield {"success": False, "message": msg}
@@ -656,16 +684,18 @@ class ReleaseOrchestrator:
                 sql_writer.update_git_release_audit_log(audit_log.id, merge_request_id=str(mr_iid))
             yield f"Successfully queued merge for '{source_branch}' into '{target_branch}'."
             
-            yield from self._finalize_release(project_name, mr_iid, version, target_branch, final_yaml, audit_log, sql_writer, sql_reader, debug, dry_run, source_branch)
+            yield from self._finalize_release(project_name, mr_iid, version, target_branch, final_yaml, audit_log, sql_writer, sql_reader, debug, dry_run, source_branch, repo_path=repo_path, subpath=subpath)
 
-    def _finalize_release(self, project_name, mr_iid, target_version, mr_target_branch, final_yaml, audit_log, sql_writer, sql_reader, debug, dry_run, source_branch):
+    def _finalize_release(self, project_name, mr_iid, target_version, mr_target_branch, final_yaml, audit_log, sql_writer, sql_reader, debug, dry_run, source_branch, repo_path=None, subpath=""):
+        repo_path = repo_path or project_name
+        proj_basename = project_name.split('/')[-1]
         gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
-        project = gl.projects.get(project_name)
+        project = gl.projects.get(repo_path)
 
         yield "Waiting for MR pipeline to pass before merge..."
         pipeline_success = False
         pipeline_status = "failed"
-        for update in self.pipeline_manager.monitor_pipeline(project_name, mr_iid=mr_iid, debug=debug):
+        for update in self.pipeline_manager.monitor_pipeline(repo_path, mr_iid=mr_iid, debug=debug, service_name=proj_basename, subpath=subpath):
             if isinstance(update, dict):
                 if "pipeline_success" in update:
                     pipeline_success = update.get("pipeline_success", False)
@@ -698,14 +728,18 @@ class ReleaseOrchestrator:
             yield {"success": False, "message": err_msg}
             return
 
-        yield from self._finalize_artifacts(project_name, target_version, source_branch, mr.target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run)
+        yield from self._finalize_artifacts(project_name, target_version, source_branch, mr.target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, repo_path=repo_path, subpath=subpath)
 
-    def _finalize_artifacts(self, project_name, version, source_slug_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=None):
+    def _finalize_artifacts(self, project_name, version, source_slug_branch, target_branch, final_yaml, audit_log, sql_writer, sql_reader, dry_run, new_yaml=None, repo_path=None, subpath=""):
+        repo_path = repo_path or project_name
+        proj_basename = project_name.split('/')[-1]
         target_version_tag = version
         if target_branch == 'dev' and not target_version_tag.endswith('-dev'):
             target_version_tag += '-dev'
         if not target_version_tag.startswith('v'):
             target_version_tag = 'v' + target_version_tag
+
+        git_release_tag = f"{proj_basename}-{target_version_tag}" if subpath else target_version_tag
 
         slug = re.sub(r'[^a-z0-9]+', '-', source_slug_branch.lower()).strip('-')[:63]
         yield f"Retagging container from '{slug}' to '{target_version_tag}'..."
@@ -718,19 +752,19 @@ class ReleaseOrchestrator:
                 yield {"success": False, "message": f"Artifact processing failed: Container retagging failed: {retag_msg}"}
                 return
 
-        yield f"Creating Git Tag '{target_version_tag}' on '{target_branch}'..."
+        yield f"Creating Git Tag '{git_release_tag}' on '{target_branch}'..."
         if dry_run:
-            yield f"[DRY-RUN] Would create Git Tag '{target_version_tag}' and native GitLab Release."
+            yield f"[DRY-RUN] Would create Git Tag '{git_release_tag}' and native GitLab Release."
         else:
-            tag_success, tag_msg = self.gitlab_manager.create_tag(project_name, target_version_tag, target_branch, message="Release tag [skip ci]")
+            tag_success, tag_msg = self.gitlab_manager.create_tag(repo_path, git_release_tag, target_branch, message=f"Release tag for {proj_basename} [skip ci]")
             if not tag_success and "already exists" not in tag_msg.lower() and "400" not in tag_msg.lower():
                 yield {"success": False, "message": f"Failed to create Git tag: {tag_msg}"}
                 return
             
             if not tag_success:
-                yield f"ℹ️ Git tag '{target_version_tag}' already exists, proceeding to Release creation..."
+                yield f"ℹ️ Git tag '{git_release_tag}' already exists, proceeding to Release creation..."
             
-            yield f"Creating native GitLab Release for '{target_version_tag}'..."
+            yield f"Creating native GitLab Release for '{git_release_tag}'..."
             try:
                 parsed_source = yaml.safe_load(new_yaml if new_yaml else final_yaml) if (new_yaml or final_yaml) else []
                 if isinstance(parsed_source, list) and len(parsed_source) > 0:
@@ -744,11 +778,11 @@ class ReleaseOrchestrator:
                 else:
                     release_desc = self._format_release_notes(target_version_tag, {})
 
-                rel_success, rel_msg = self.gitlab_manager.create_release(project_name, target_version_tag, release_desc)
+                rel_success, rel_msg = self.gitlab_manager.create_release(repo_path, git_release_tag, release_desc)
                 if not rel_success:
                     yield {"success": False, "message": f"Failed to create GitLab Release: {rel_msg}"}
                     return
-                yield f"✅ GitLab Release '{target_version_tag}' created successfully!"
+                yield f"✅ GitLab Release '{git_release_tag}' created successfully!"
             except Exception as e:
                 yield {"success": False, "message": f"Failed to format or create GitLab Release: {e}"}
                 return
@@ -775,6 +809,8 @@ class ReleaseOrchestrator:
         sql_writer = None
         
         ctx = None
+        repo_path = project_name
+        subpath = ""
         if self.use_db:
             ctx = get_db_session(read_only=False)
             session = ctx.__enter__()
@@ -782,7 +818,15 @@ class ReleaseOrchestrator:
                 sql_reader = SQLReader(session)
                 sql_writer = SQLWriter(session)
                 
-                project_name = sql_reader.resolve_project_path(project_name)
+                proj_obj = sql_reader.resolve_project_obj(project_name)
+                if proj_obj:
+                    project_name = proj_obj.project_path
+                    repo_path = proj_obj.repo_path or project_name
+                    subpath = proj_obj.subpath or ""
+                else:
+                    project_name = sql_reader.resolve_project_path(project_name)
+                    repo_path = project_name
+                    
                 active_lock = sql_reader.get_active_git_release_audit_log(project_name)
                 
                 if active_lock:
@@ -811,7 +855,7 @@ class ReleaseOrchestrator:
 
         try:
             trace_logs = []
-            for item in self._run_retry_internal(project_name, pipeline_id, merge_id, skip_warnings, debug, audit_log, sql_reader, sql_writer, author):
+            for item in self._run_retry_internal(project_name, pipeline_id, merge_id, skip_warnings, debug, audit_log, sql_reader, sql_writer, author, repo_path=repo_path, subpath=subpath):
                 trace_logs.append(item)
                 if isinstance(item, dict) and not item.get("success", True):
                     if audit_log and sql_writer:
@@ -841,12 +885,16 @@ class ReleaseOrchestrator:
                 except Exception:
                     pass
 
-    def _run_retry_internal(self, project_name: str, pipeline_id: int, merge_id: int, skip_warnings: bool, debug: bool, audit_log, sql_reader, sql_writer, author: str) -> Generator[Any, None, None]:
+    def _run_retry_internal(self, project_name: str, pipeline_id: int, merge_id: int, skip_warnings: bool, debug: bool, audit_log, sql_reader, sql_writer, author: str, repo_path: str = None, subpath: str = "") -> Generator[Any, None, None]:
+        repo_path = repo_path or project_name
+        subpath = subpath or ""
+        cl_rel_path = f"{subpath}/docs/CHANGELOG.yaml" if subpath else "docs/CHANGELOG.yaml"
+        proj_basename = project_name.split('/')[-1]
         yield f"Initiating retry for pipeline #{pipeline_id} on project '{project_name}'..."
 
         author_name = self.config.get('external_services', {}).get('gitlab', {}).get('bot_username', 'GIA AI Bot')
         if author:
-            resolved = self.gitlab_manager.resolve_user(project_name, author)
+            resolved = self.gitlab_manager.resolve_user(repo_path, author)
             if resolved and 'name' in resolved:
                 author_name = resolved['name']
                 yield f"✅ Mapped author override '{author}' to GitLab user: {author_name}"
@@ -855,7 +903,7 @@ class ReleaseOrchestrator:
         
         try:
             gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
-            project = gl.projects.get(project_name)
+            project = gl.projects.get(repo_path)
             
             if merge_id:
                 mr = project.mergerequests.get(merge_id)
@@ -925,6 +973,15 @@ class ReleaseOrchestrator:
                         sql_writer.update_git_release_audit_log(audit_log.id, source_branch=mr.source_branch, target_branch=mr.target_branch, merge_request_id=str(mr.iid))
                 else:
                     p.retry()
+                    if hasattr(p, 'bridges'):
+                        try:
+                            for b in p.bridges.list(all=True):
+                                ds = getattr(b, 'downstream_pipeline', None)
+                                if ds and isinstance(ds, dict) and ds.get('id') and ds.get('status') in ['failed', 'canceled']:
+                                    child_pl = project.pipelines.get(ds['id'])
+                                    child_pl.retry()
+                        except Exception:
+                            pass
                 time.sleep(2) 
                 
         except Exception as e:
@@ -935,7 +992,7 @@ class ReleaseOrchestrator:
             
         pipeline_success = False
         pipeline_status = "failed"
-        for update in self.pipeline_manager.monitor_pipeline(project_name, pipeline_id=pipeline_id, debug=debug):
+        for update in self.pipeline_manager.monitor_pipeline(repo_path, pipeline_id=pipeline_id, debug=debug, service_name=proj_basename, subpath=subpath):
             if isinstance(update, dict):
                 if "pipeline_success" in update:
                     pipeline_success = update.get("pipeline_success", False)
@@ -1014,7 +1071,7 @@ class ReleaseOrchestrator:
         target_version = "0.1.0"
         changelog_data = []
         try:
-            f = project.files.get(file_path='docs/CHANGELOG.yaml', ref=mr.target_branch)
+            f = project.files.get(file_path=cl_rel_path, ref=mr.target_branch)
             changelog_content = base64.b64decode(f.content).decode('utf-8')
             changelog_data = yaml.safe_load(changelog_content)
             if isinstance(changelog_data, list) and len(changelog_data) > 0:
@@ -1023,6 +1080,6 @@ class ReleaseOrchestrator:
             logger.warning(f"[GitRetry] Could not parse version from changelog for retagging: {e}")
             
         if target_version != "0.1.0":
-            yield from self._finalize_artifacts(project_name, target_version, mr.source_branch, mr.target_branch, None, audit_log, sql_writer, sql_reader, False)
+            yield from self._finalize_artifacts(project_name, target_version, mr.source_branch, mr.target_branch, None, audit_log, sql_writer, sql_reader, False, repo_path=repo_path, subpath=subpath)
 
         yield {"success": True, "message": f"Retry and Release of MR !{mr.iid} completed successfully! ✅"}

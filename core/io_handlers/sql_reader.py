@@ -116,22 +116,36 @@ class SQLReader:
         for r in resources:
             if not r.metadata_json: continue
             
+            reg_raw = r.metadata_json.get('registry', '')
+            reg_path = reg_raw.split('/', 1)[1].rstrip('/') if '/' in reg_raw else ''
+            
             images = []
             if 'image' in r.metadata_json:
-                images.append(r.metadata_json['image'])
+                images.append((r.metadata_json['image'], reg_path))
             for cont in r.metadata_json.get('containers', []):
                 if 'image' in cont:
-                    images.append(cont['image'])
+                    c_reg_raw = cont.get('registry', reg_raw)
+                    c_reg_path = c_reg_raw.split('/', 1)[1].rstrip('/') if '/' in c_reg_raw else reg_path
+                    images.append((cont['image'], c_reg_path))
                     
-            for img in images:
-                if img not in counts:
-                    counts[img] = {'count': 0, 'namespaces': set()}
-                counts[img]['count'] += 1
-                if r.tenant:
-                    counts[img]['namespaces'].add(r.tenant.tenant_namespace)
+            for img, r_path in images:
+                keys_to_update = []
+                if r_path:
+                    keys_to_update.append(f"{r_path}/{img}")
+                    if r_path.startswith('ai/halo'):
+                        keys_to_update.append(img)
+                else:
+                    keys_to_update.append(img)
                     
-        for img in counts:
-            counts[img]['namespaces'] = list(counts[img]['namespaces'])
+                for k in keys_to_update:
+                    if k not in counts:
+                        counts[k] = {'count': 0, 'namespaces': set()}
+                    if r.tenant:
+                        counts[k]['namespaces'].add(r.tenant.tenant_namespace)
+                    
+        for k in counts:
+            counts[k]['namespaces'] = sorted(list(counts[k]['namespaces']))
+            counts[k]['count'] = len(counts[k]['namespaces'])
             
         return counts
 
@@ -142,7 +156,9 @@ class SQLReader:
             query = query.filter(
                 (GitProject.project_name == project_filter) | 
                 (GitProject.project_path == project_filter) |
-                (GitProject.project_path.like(f"%/{project_filter}"))
+                (GitProject.repo_path == project_filter) |
+                (GitProject.project_path.like(f"%/{project_filter}")) |
+                (GitProject.repo_path.like(f"%/{project_filter}"))
             )
             
         active_deployments = self.get_active_deployments_counts()
@@ -168,9 +184,21 @@ class SQLReader:
                         audit_mapping[log.project_name][log.version_tag] = log.source_branch
 
         projects = query.all()
+        if project_filter and not project_filter.startswith("ai/"):
+            defense_matches = [p for p in projects if p.project_path.startswith("ai/defense-halo/")]
+            if defense_matches:
+                projects = defense_matches
+                
+        projects.sort(key=lambda p: (0 if p.project_path.startswith("ai/defense-halo/") else 1, p.project_path))
         result = []
         for p in projects:
-            p_audit = audit_mapping.get(p.project_path, {})
+            p_audit = dict(audit_mapping.get(p.project_path, {}))
+            if p.repo_path and p.repo_path in audit_mapping:
+                for k, v in audit_mapping[p.repo_path].items():
+                    p_audit.setdefault(k, v)
+                    if k.startswith(f"{p.project_name}-"):
+                        p_audit.setdefault(k[len(p.project_name) + 1:], v)
+                        
             branches = {b.name: {"author": b.author, "last_updated_at": b.last_updated_at.isoformat() if getattr(b, "last_updated_at", None) else None} for b in p.branches}
             
             releases = []
@@ -180,12 +208,24 @@ class SQLReader:
             core_environments = []
             inactive_releases = []
             
+            def _lookup_deployment(image_path: str, tag_val: str):
+                full_img = f"{image_path}:{tag_val}" if image_path else f"{p.project_path}:{tag_val}"
+                if full_img in active_deployments:
+                    return active_deployments[full_img]
+                proj_img = f"{p.project_path}:{tag_val}"
+                if proj_img in active_deployments:
+                    return active_deployments[proj_img]
+                if p.project_path.startswith("ai/halo/"):
+                    short_name = image_path.split('/')[-1] if image_path else p.project_name
+                    short_img = f"{short_name}:{tag_val}"
+                    if short_img in active_deployments:
+                        return active_deployments[short_img]
+                return {}
+            
             matched_containers = set()
             for c in p.containers:
                 tag = c.tag_name
-                short_container_name = c.image_path.split('/')[-1] if c.image_path else p.project_name
-                short_image = f"{short_container_name}:{tag}"
-                deploy_info = active_deployments.get(short_image, {})
+                deploy_info = _lookup_deployment(c.image_path, tag)
                 deploy_count = deploy_info.get('count', 0)
                 deploy_namespaces = deploy_info.get('namespaces', [])
                 
@@ -206,7 +246,7 @@ class SQLReader:
                     releases.append(c_info)
                     matched_containers.add(tag)
                 elif tag.startswith('v') and '-dev' in tag:
-                    c_info["source_feature"] = p_audit.get(tag, "Unknown")
+                    c_info["source_feature"] = p_audit.get(tag, p_audit.get(f"{p.project_name}-{tag}", "Unknown"))
                     pre_releases.append(c_info)
                     matched_containers.add(tag)
                 else:
@@ -234,7 +274,12 @@ class SQLReader:
                 if key[0] == p.project_path and action == 'DELETE':
                     tag = key[1]
                     if tag not in matched_containers:
-                        has_native_release = tag in (p.native_releases or [])
+                        native_list = p.native_releases or []
+                        has_native_release = (
+                            tag in native_list or
+                            f"{p.project_name}-{tag}" in native_list or
+                            f"{p.project_name}/{tag}" in native_list
+                        )
                         if not has_native_release:
                             continue
                             
@@ -253,14 +298,12 @@ class SQLReader:
                             inactive_info["branch_exists"] = False
                             inactive_releases.append(inactive_info)
                         elif tag.startswith('v') and '-dev' in tag:
-                            inactive_info["source_feature"] = p_audit.get(tag, "Unknown")
+                            inactive_info["source_feature"] = p_audit.get(tag, p_audit.get(f"{p.project_name}-{tag}", "Unknown"))
                             inactive_releases.append(inactive_info)
                             
             for c in p.containers:
                 if c.tag_name not in matched_containers:
-                    short_container_name = c.image_path.split('/')[-1] if c.image_path else p.project_name
-                    short_image = f"{short_container_name}:{c.tag_name}"
-                    deploy_info = active_deployments.get(short_image, {})
+                    deploy_info = _lookup_deployment(c.image_path, c.tag_name)
                     standalone_features.append({
                         "tag": c.tag_name,
                         "author": c.author,
@@ -273,10 +316,10 @@ class SQLReader:
             matched_branches = [f["branch"] for f in features] + [f["branch"] for f in core_environments if "branch" in f]
             active_branches_without_containers = []
             
-            # Extract known container repository names for this project
-            known_container_names = set(c.image_path.split('/')[-1] for c in p.containers if c.image_path)
-            if not known_container_names:
-                known_container_names = {p.project_name}
+            # Extract known container repository paths for this project
+            known_image_paths = set(c.image_path for c in p.containers if c.image_path)
+            if not known_image_paths:
+                known_image_paths = {p.project_path}
                 
             for b_name, b_info in branches.items():
                 if b_name not in matched_branches:
@@ -284,14 +327,13 @@ class SQLReader:
                     
                     # Proactively check if there are active deployments for this branch
                     # even if the container tag was deleted from the registry (e.g. by cleanup pipelines)
-                    deploy_count = 0
-                    deploy_namespaces = []
-                    for c_name in known_container_names:
-                        short_image = f"{c_name}:{sanitized_b}"
-                        if short_image in active_deployments:
-                            d_info = active_deployments[short_image]
-                            deploy_count += d_info.get('count', 0)
-                            deploy_namespaces.extend(d_info.get('namespaces', []))
+                    deploy_namespaces_set = set()
+                    for img_path in known_image_paths:
+                        d_info = _lookup_deployment(img_path, sanitized_b)
+                        if d_info:
+                            deploy_namespaces_set.update(d_info.get('namespaces', []))
+                    deploy_namespaces = sorted(list(deploy_namespaces_set))
+                    deploy_count = len(deploy_namespaces)
                     
                     branch_info = {
                         "branch": b_name, 
@@ -318,6 +360,8 @@ class SQLReader:
             proj_data = {
                 "name": p.project_name,
                 "path": p.project_path,
+                "repo_path": p.repo_path or p.project_path,
+                "subpath": p.subpath or "",
                 "type": p.project_type.name,
                 "is_deprecated": p.is_deprecated,
                 "inventory": {
@@ -402,26 +446,52 @@ class SQLReader:
             action=action
         ).order_by(GitReleaseAuditLog.timestamp.desc()).first()
 
+    def resolve_project_obj(self, project_name: str):
+        if not project_name:
+            return None
+        matches = self.session.query(GitProject).filter(
+            or_(
+                GitProject.project_path == project_name,
+                GitProject.project_name == project_name,
+                GitProject.project_path.like(f"%/{project_name}"),
+                GitProject.repo_path == project_name
+            )
+        ).all()
+        if not matches:
+            return None
+        for m in matches:
+            if m.project_path == project_name:
+                return m
+        defense_matches = [m for m in matches if m.project_path.startswith("ai/defense-halo/")]
+        if defense_matches:
+            return defense_matches[0]
+        return matches[0]
+
     def resolve_project_path(self, project_name: str) -> str:
         if not project_name:
             return project_name
-        proj = self.session.query(GitProject).filter(
-            or_(
-                GitProject.project_name == project_name,
-                GitProject.project_path == project_name,
-                GitProject.project_path.like(f"%/{project_name}")
-            )
-        ).first()
+        proj = self.resolve_project_obj(project_name)
         return proj.project_path if proj else project_name
 
     def get_git_project_by_name(self, project_name: str):
-        return self.session.query(GitProject).filter(
+        matches = self.session.query(GitProject).filter(
             or_(
                 GitProject.project_name == project_name,
                 GitProject.project_path == project_name,
-                GitProject.project_path.like(f"%/{project_name}")
+                GitProject.project_path.like(f"%/{project_name}"),
+                GitProject.repo_path == project_name
             )
         ).all()
+        if not matches:
+            return []
+        exact = [m for m in matches if m.project_path == project_name]
+        if exact:
+            return exact
+        if not project_name.startswith("ai/"):
+            defense_matches = [m for m in matches if m.project_path.startswith("ai/defense-halo/")]
+            if defense_matches:
+                return defense_matches
+        return matches
 
     def get_git_branch(self, project_id: str, branch_name: str):
         return self.session.query(GitBranch).filter_by(project_id=project_id, name=branch_name).first()

@@ -68,7 +68,41 @@ class GitPipelineManager:
         except Exception as e:
             return False, None, f"{str(e)}"
 
-    def monitor_pipeline(self, project_path, ref=None, mr_iid=None, pipeline_id=None, debug=False):
+    def _collect_pipeline_jobs(self, project, pipeline, service_name=None, subpath=None):
+        jobs = list(pipeline.jobs.list(all=True))
+        bridges = []
+        if hasattr(pipeline, 'bridges'):
+            try:
+                bridges = list(pipeline.bridges.list(all=True))
+            except Exception:
+                bridges = []
+                
+        if bridges:
+            target_bridges = bridges
+            if service_name or subpath:
+                candidates = {x for x in (service_name, subpath, subpath.split('/')[-1] if subpath else None) if x}
+                filtered = [b for b in bridges if getattr(b, 'name', '') in candidates]
+                if filtered:
+                    target_bridges = filtered
+            multi_bridge = len(target_bridges) > 1
+            for b in target_bridges:
+                ds = getattr(b, 'downstream_pipeline', None)
+                if ds and isinstance(ds, dict) and ds.get('id'):
+                    try:
+                        child_pl = project.pipelines.get(ds['id'])
+                        child_jobs = child_pl.jobs.list(all=True)
+                        for cj in child_jobs:
+                            if multi_bridge:
+                                cj.name = f"[{b.name}] {cj.name}"
+                            jobs.append(cj)
+                    except Exception:
+                        pass
+                else:
+                    # Include the bridge itself if it hasn't spawned a downstream pipeline yet or failed
+                    jobs.append(b)
+        return jobs
+
+    def monitor_pipeline(self, project_path, ref=None, mr_iid=None, pipeline_id=None, debug=False, service_name=None, subpath=None):
         gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
         project = gl.projects.get(project_path)
         
@@ -117,7 +151,7 @@ class GitPipelineManager:
         canceled_jobs = set()
         
         while pipeline.status in ['running', 'pending', 'created', 'waiting_for_resource', 'preparing']:
-            jobs = pipeline.jobs.list(all=True)
+            jobs = self._collect_pipeline_jobs(project, pipeline, service_name=service_name, subpath=subpath)
             active_jobs = 0
             for job in jobs:
                 prev_status = job_states.get(job.name)
@@ -225,7 +259,7 @@ class GitPipelineManager:
             
         if pipeline.status == 'success':
             yield f"Pipeline #{pipeline.id} completed successfully! ✅"
-            jobs = pipeline.jobs.list(all=True)
+            jobs = self._collect_pipeline_jobs(project, pipeline, service_name=service_name, subpath=subpath)
             for job in jobs:
                 if job.status == 'failed':
                     yield f"  ⚠️ Note: Job '{job.name}' (Stage: {job.stage}) failed but was allowed to fail. (Web: {job.web_url})"
@@ -244,9 +278,15 @@ class GitPipelineManager:
                         yield f"      (Could not fetch trace: {e})"
             
             try:
-                repos = project.repositories.list()
+                repos = project.repositories.list(get_all=True)
                 if repos:
-                    tags = repos[0].tags.list(get_all=True)
+                    target_repo = repos[0]
+                    if service_name:
+                        for r in repos:
+                            if getattr(r, 'name', '') == service_name or getattr(r, 'path', '').endswith(f"/{service_name}"):
+                                target_repo = r
+                                break
+                    tags = target_repo.tags.list(get_all=True)
                     if tags:
                         import re
                         expected_tag_name = None
@@ -264,12 +304,12 @@ class GitPipelineManager:
                         if expected_tag_name:
                             for t in tags:
                                 if t.name == expected_tag_name:
-                                    target_tag = repos[0].tags.get(id=t.name)
+                                    target_tag = target_repo.tags.get(id=t.name)
                                     break
                                     
                         if not target_tag:
                             tags.sort(key=lambda t: getattr(t, 'created_at', ''), reverse=True)
-                            target_tag = repos[0].tags.get(id=tags[0].name)
+                            target_tag = target_repo.tags.get(id=tags[0].name)
                             
                         total_size_bytes = target_tag.attributes.get('total_size', 0)
                         if total_size_bytes:
@@ -285,28 +325,28 @@ class GitPipelineManager:
                     "name": job.name,
                     "stage": job.stage,
                     "status": job.status,
-                    "duration": job.duration,
-                    "web_url": job.web_url
+                    "duration": getattr(job, 'duration', None),
+                    "web_url": getattr(job, 'web_url', None)
                 })
                 
             yield {"pipeline_success": True, "telemetry": telemetry}
         else:
             yield f"Pipeline #{pipeline.id} failed with status: {pipeline.status.upper()} ❌"
-            jobs = pipeline.jobs.list(all=True)
+            jobs = self._collect_pipeline_jobs(project, pipeline, service_name=service_name, subpath=subpath)
             for job in jobs:
                 job_data = {
                     "id": job.id,
                     "name": job.name,
                     "stage": job.stage,
                     "status": job.status,
-                    "duration": job.duration,
-                    "web_url": job.web_url,
+                    "duration": getattr(job, 'duration', None),
+                    "web_url": getattr(job, 'web_url', None),
                     "trace": None
                 }
                 if job.status == 'failed':
                     allow_failure = getattr(job, 'allow_failure', False)
                     status_str = " (allowed to fail)" if allow_failure else ""
-                    yield f"  - Failed Job: {job.name} (Stage: {job.stage}){status_str} (Web: {job.web_url})"
+                    yield f"  - Failed Job: {job.name} (Stage: {job.stage}){status_str} (Web: { getattr(job, 'web_url', None) })"
                     try:
                         p_job = project.jobs.get(job.id)
                         trace_bytes = p_job.trace()

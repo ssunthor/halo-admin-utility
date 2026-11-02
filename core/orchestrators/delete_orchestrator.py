@@ -36,6 +36,7 @@ class DeleteOrchestrator:
             return False, f"Ambiguous project name '{project_name}'. Matched {len(projects)} projects: {', '.join(matched_paths)}. Please provide the full project path."
 
         full_project_path = projects[0].project_path
+        repo_path = projects[0].repo_path or full_project_path
         project_id = projects[0].id
 
         if branch_name:
@@ -50,11 +51,15 @@ class DeleteOrchestrator:
             active_counts = sql_reader.get_active_deployments_counts()
             short_container_name = full_project_path.split('/')[-1]
             short_image = f"{short_container_name}:{container_tag}"
+            full_image = f"{full_project_path}:{container_tag}"
 
-            deploy_info = active_counts.get(short_image, {})
+            deploy_info = active_counts.get(full_image)
+            if deploy_info is None and full_project_path.startswith("ai/halo/"):
+                deploy_info = active_counts.get(short_image, {})
+            deploy_info = deploy_info or {}
             if deploy_info.get('count', 0) > 0:
                 ns = ", ".join(deploy_info.get('namespaces', []))
-                msg = f"SAFETY ABORT: Container '{short_image}' is actively deployed in namespaces: {ns}."
+                msg = f"SAFETY ABORT: Container '{full_image}' is actively deployed in namespaces: {ns}."
 
                 log = sql_writer.create_git_release_audit_log(
                     project_name=full_project_path,
@@ -69,24 +74,23 @@ class DeleteOrchestrator:
                 sql_writer.update_git_release_audit_log(log.id, error_message=msg)
                 return False, msg
 
-            logger.info(f"Verified container '{short_image}' is not actively deployed. Proceeding with deletion.")
+            logger.info(f"Verified container '{full_image}' is not actively deployed. Proceeding with deletion.")
 
         messages = []
         overall_success = True
 
         if container_tag:
-            short_container_name = full_project_path.split('/')[-1]
-            short_image = f"{short_container_name}:{container_tag}"
-            messages.append(f"Safety Check: Verified container '{short_image}' is inactive.")
+            full_image = f"{full_project_path}:{container_tag}"
+            messages.append(f"Safety Check: Verified container '{full_image}' is inactive.")
 
         if branch_name:
-            success, msg = self.gitlab_manager.delete_branch(full_project_path, branch_name)
+            success, msg = self.gitlab_manager.delete_branch(repo_path, branch_name)
             messages.append(f"Branch: {msg}")
             if not success:
                 overall_success = False
 
         if container_tag:
-            success, msg = self.registry_manager.delete_container_tag(full_project_path, container_tag)
+            success, msg = self.registry_manager.delete_container_tag(full_project_path, container_tag, repo_path=repo_path)
             messages.append(f"Container: {msg}")
             if not success:
                 overall_success = False
@@ -149,12 +153,14 @@ class DeleteOrchestrator:
         for p in projects:
             p_name = p.get('name')
             p_path = p.get('path')
+            repo_path = p.get('repo_path') or p_path
+            subpath = p.get('subpath') or ""
             log_and_cb(f"\nAnalyzing project: {p_name} ({p_path})")
             
             try:
-                gl_project = gl.projects.get(p_path)
+                gl_project = gl.projects.get(repo_path)
             except Exception as e:
-                log_and_cb(f"Failed to fetch GitLab project {p_path}: {e}")
+                log_and_cb(f"Failed to fetch GitLab project {repo_path}: {e}")
                 continue
                 
             items_to_check = []
@@ -245,11 +251,11 @@ class DeleteOrchestrator:
                     overall_success = True
                     msg = []
                     if branch_name:
-                        success, m = self.gitlab_manager.delete_branch(p_path, branch_name)
+                        success, m = self.gitlab_manager.delete_branch(repo_path, branch_name)
                         if not success: overall_success = False
                         msg.append(f"Branch: {m}")
                     if tag_name:
-                        success, m = self.registry_manager.delete_container_tag(p_path, tag_name)
+                        success, m = self.registry_manager.delete_container_tag(p_path, tag_name, repo_path=repo_path)
                         if not success: overall_success = False
                         msg.append(f"Container: {m}")
                         

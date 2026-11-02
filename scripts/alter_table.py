@@ -55,12 +55,17 @@ def main():
     """)
     alter_query6 = text("ALTER TABLE halo_tenant DROP CONSTRAINT IF EXISTS halo_tenant_tenant_acronym_key;")
     alter_query7 = text("ALTER TABLE halo_tenant DROP CONSTRAINT IF EXISTS halo_tenant_netbox_slug_key;")
+    alter_query8 = text("ALTER TABLE git_project ADD COLUMN IF NOT EXISTS repo_path VARCHAR(255);")
+    alter_query9 = text("ALTER TABLE git_project ADD COLUMN IF NOT EXISTS subpath VARCHAR(255);")
+    alter_query10 = text("UPDATE git_project SET repo_path = project_path WHERE repo_path IS NULL;")
     
     try:
         with get_db_session(read_only=False) as session:
             try:
                 session.execute(alter_query1)
+                session.commit()
             except Exception as e:
+                session.rollback()
                 logger.warning(f"Could not rename slug_name, maybe already done? {e}")
             session.execute(alter_query2)
             session.execute(alter_query3)
@@ -68,6 +73,9 @@ def main():
             session.execute(alter_query5)
             session.execute(alter_query6)
             session.execute(alter_query7)
+            session.execute(alter_query8)
+            session.execute(alter_query9)
+            session.execute(alter_query10)
             session.commit()
         logger.info("✅ Successfully executed alter query.")
     except Exception as e:

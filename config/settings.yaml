@@ -1,6 +1,6 @@
 module_info:
   name: "HALO Admin Utility"
-  version: "0.3.0"
+  version: "0.4.0"
   acronym: "HAU"
   category: "Utility"
   description: "Primary operational control plane to provision, govern, and monitor HALO customer tenants."
@@ -52,8 +52,14 @@ external_services:
     url: "https://gitlab.gt-t.net"
     bot_username: "gia-ai"
     bot_token: "glpat-k93KQgH9FdQTwDiYx9SKkW86MQp1OmRyCA.01.0y121c5gf"
-    project_path: "ai/halo"
+    project_path: "ai/defense-halo"
+    project_paths:
+      - "ai/defense-halo"
+      - "ai/halo"
+    ignored_projects:
+      - "ai/defense-halo/k8s"
     local_clone_path: "/ai/utilities/halo_admin_utility/cache/halo"
+    local_cache_root: "/ai/utilities/halo_admin_utility/cache"
   netbox:
     dependency_name: "netbox_rest_api"
     type: "rest_api"

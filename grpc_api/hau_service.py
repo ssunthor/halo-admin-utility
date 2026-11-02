@@ -159,12 +159,30 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         result = self.gitlab_manager.push_group_cache(request.commit_message)
         return hau_pb2.GitPushResponse(success=True, message=result)
 
+    def _resolve_project_meta(self, project_name: str):
+        repo_path = project_name
+        subpath = ""
+        resolved_path = project_name
+        try:
+            with self._get_db_session(write=False) as session:
+                if session:
+                    reader = SQLReader(session)
+                    proj_obj = reader.resolve_project_obj(project_name)
+                    if proj_obj:
+                        resolved_path = proj_obj.project_path
+                        repo_path = proj_obj.repo_path or resolved_path
+                        subpath = proj_obj.subpath or ""
+        except Exception as e:
+            logger.warning(f"Failed to resolve project metadata for '{project_name}': {e}")
+        return resolved_path, repo_path, subpath
+
     @handle_rpc(hau_pb2.GitCheckoutResponse)
     def GitCheckout(self, request, context):
         if not self.gitlab_manager:
             return hau_pb2.GitCheckoutResponse(success=False, message="GitlabManager is not initialized.")
         
-        result = self.gitlab_manager.checkout_project_branch(request.project_name, request.branch_name)
+        _, repo_path, _ = self._resolve_project_meta(request.project_name)
+        result = self.gitlab_manager.checkout_project_branch(repo_path, request.branch_name)
         return hau_pb2.GitCheckoutResponse(success=True, message=result)
 
     # Notice: Removing @handle_rpc because this is now a streaming RPC
@@ -307,16 +325,17 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         if not self.gitlab_manager:
             return hau_pb2.GenerateChangelogResponse(success=False, message="GitlabManager is not initialized.", changelog_yaml="")
             
-        checkout_res = self.gitlab_manager.checkout_project_branch(request.project_name, request.branch_name)
+        resolved_path, repo_path, subpath = self._resolve_project_meta(request.project_name)
+        checkout_res = self.gitlab_manager.checkout_project_branch(repo_path, request.branch_name)
         if "Failed" in checkout_res:
             return hau_pb2.GenerateChangelogResponse(success=False, message=checkout_res, changelog_yaml="")
             
         local_base = self.config['external_services']['gitlab']['local_clone_path']
-        repo_local_path = self.gitlab_manager.resolve_local_repo_path(request.project_name, local_base)
+        repo_local_path = self.gitlab_manager.resolve_local_repo_path(repo_path, local_base)
         
         try:
             orchestrator = ChangelogOrchestrator(config=self.config)
-            final_yaml = orchestrator.generate_from_branch(repo_local_path, request.branch_name, request.project_name)
+            final_yaml = orchestrator.generate_from_branch(repo_local_path, request.branch_name, resolved_path, subpath=subpath)
             
             if not final_yaml:
                 return hau_pb2.GenerateChangelogResponse(
@@ -346,9 +365,10 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             yield hau_pb2.GitBackfillResponse(success=False, message="GitlabManager is not initialized.", changelog_yaml="")
             return
             
-        repo_local_path = self.gitlab_manager.resolve_local_repo_path(request.project_name, local_base)
+        resolved_path, repo_path, subpath = self._resolve_project_meta(request.project_name)
+        repo_local_path = self.gitlab_manager.resolve_local_repo_path(repo_path, local_base)
             
-        checkout_res = self.gitlab_manager.checkout_project_branch(request.project_name, request.branch_name)
+        checkout_res = self.gitlab_manager.checkout_project_branch(repo_path, request.branch_name)
         if "Failed" in checkout_res:
             yield hau_pb2.GitBackfillResponse(success=False, message=checkout_res, changelog_yaml="")
             return
@@ -365,13 +385,14 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         start_version = request.start_version if request.start_version else "0.1.0"
         start_commit = request.start_commit if request.start_commit else None
         start_date = request.start_date if request.start_date else None
-        cl_path = os.path.join(repo_local_path, 'docs', 'CHANGELOG.yaml')
+        cl_rel_path = f"{subpath}/docs/CHANGELOG.yaml" if subpath else "docs/CHANGELOG.yaml"
+        cl_path = os.path.join(repo_local_path, cl_rel_path)
         has_existing = False
         if start_commit or start_date:
             has_existing = os.path.exists(cl_path) and bool(open(cl_path, 'r').read().strip())
         
         try:
-            for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version, start_commit, start_date, has_existing=has_existing, debug_run=request.debug_run):
+            for item in orchestrator.run_backfill(repo_local_path, request.branch_name, start_version, start_commit, start_date, has_existing=has_existing, debug_run=request.debug_run, subpath=subpath):
                 if isinstance(item, dict):
                     if "incremental_yaml" in item:
                         yield hau_pb2.GitBackfillResponse(
@@ -907,8 +928,9 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
         from core.managers.container_registry_manager import ContainerRegistryManager
         registry_manager = ContainerRegistryManager(self.config)
         
+        resolved_path, _, _ = self._resolve_project_meta(request.project_name)
         success, message = registry_manager.retag_container(
-            project_path=request.project_name,
+            project_path=resolved_path,
             old_tag=request.source_tag,
             new_tag=request.target_tag
         )
@@ -920,14 +942,15 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             yield hau_pb2.GitPushChangelogResponse(success=False, message="GitlabManager is not initialized.")
             return
             
-        proj_basename = request.project_name.split('/')[-1]
-        file_path = f"docs/CHANGELOG.yaml"
+        resolved_path, repo_path, subpath = self._resolve_project_meta(request.project_name)
+        proj_basename = resolved_path.split('/')[-1]
+        file_path = f"{subpath}/docs/CHANGELOG.yaml" if subpath else "docs/CHANGELOG.yaml"
         commit_msg_prefix = f"chore(release): manual changelog update"
         
         if request.dry_run:
             yield hau_pb2.GitPushChangelogResponse(
                 success=True, 
-                message=f"[DRY-RUN] Would push to {request.project_name} on branch {request.target_branch} (via MR) and deployment repo (docs/{proj_basename}/CHANGELOG.yaml on main)."
+                message=f"[DRY-RUN] Would push to {resolved_path} ({repo_path}:{file_path}) on branch {request.target_branch} (via MR) and deployment repo (docs/{proj_basename}/CHANGELOG.yaml on main)."
             )
             return
 
@@ -939,13 +962,13 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             sql_reader = SQLReader(session)
             
             try:
-                active_lock = sql_reader.get_active_git_release_audit_log(request.project_name)
+                active_lock = sql_reader.get_active_git_release_audit_log(resolved_path)
                 if active_lock:
-                    yield hau_pb2.GitPushChangelogResponse(success=False, message=f"⚠️ WARNING: A release (Action: {active_lock.action}) is already currently running for {request.project_name} by {active_lock.actor}. Please wait for it to finish.")
+                    yield hau_pb2.GitPushChangelogResponse(success=False, message=f"⚠️ WARNING: A release (Action: {active_lock.action}) is already currently running for {resolved_path} by {active_lock.actor}. Please wait for it to finish.")
                     return
                 
                 audit_log = sql_writer.create_git_release_audit_log(
-                    project_name=request.project_name,
+                    project_name=resolved_path,
                     action="GIT_PUSH_CHANGELOG",
                     actor=actor_name,
                     status="RUNNING",
@@ -958,15 +981,15 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
 
         try:
             temp_branch = f"fix/changelog-{int(time.time())}"
-            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Preparing local git workspace for {request.project_name}...")
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Preparing local git workspace for {resolved_path}...")
             
             local_base = self.config['external_services']['gitlab']['local_clone_path']
-            repo_local_path = self.gitlab_manager.resolve_local_repo_path(request.project_name, local_base)
+            repo_local_path = self.gitlab_manager.resolve_local_repo_path(repo_path, local_base)
             
-            self.gitlab_manager.checkout_project_branch(request.project_name, request.target_branch)
+            self.gitlab_manager.checkout_project_branch(repo_path, request.target_branch)
             subprocess.run(['git', 'checkout', '-b', temp_branch], cwd=repo_local_path, capture_output=True)
             
-            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Writing updated CHANGELOG.yaml locally...")
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Writing updated CHANGELOG.yaml locally ({file_path})...")
             full_cl_path = os.path.join(repo_local_path, file_path)
             os.makedirs(os.path.dirname(full_cl_path), exist_ok=True)
             with open(full_cl_path, 'w') as f:
@@ -987,7 +1010,7 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
             from core.managers.git_pipeline_manager import GitPipelineManager
             pm = GitPipelineManager(self.config)
             success, mr_iid, msg = pm.create_and_merge_mr(
-                request.project_name,
+                repo_path,
                 temp_branch,
                 request.target_branch,
                 f"Manual changelog update for {proj_basename} [skip ci]",
@@ -1007,7 +1030,7 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 
             yield hau_pb2.GitPushChangelogResponse(success=True, message=f"Waiting for merge to complete (skipping pipeline wait due to [skip ci])....")
             gl = gitlab.Gitlab(self.gitlab_manager.url, private_token=self.gitlab_manager.token, ssl_verify=False)
-            project = gl.projects.get(request.project_name)
+            project = gl.projects.get(repo_path)
             merged = False
             for _ in range(30):
                 try:
@@ -1049,7 +1072,7 @@ class HauServiceServicer(hau_pb2_grpc.HauServiceServicer, DependencyProviderMixi
                 with self._get_db_session(write=True) as session:
                     SQLWriter(session).update_git_release_audit_log(audit_log_id, status="SUCCESS")
                     
-            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"✅ Successfully pushed changelog to {request.project_name} on branch {request.target_branch} (via MR !{mr_iid}) and deployment repo.")
+            yield hau_pb2.GitPushChangelogResponse(success=True, message=f"✅ Successfully pushed changelog to {resolved_path} on branch {request.target_branch} (via MR !{mr_iid}) and deployment repo.")
         except Exception as e:
             logger.error(f"[GitPushChangelog] Failed to push changelog: {e}", exc_info=True)
             if audit_log_id:

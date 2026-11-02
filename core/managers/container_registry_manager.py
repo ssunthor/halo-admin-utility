@@ -97,20 +97,38 @@ class ContainerRegistryManager:
         else:
             return False, f"Failed to push new tag {new_tag}: {put_res.status_code} - {put_res.text}"
 
-    def delete_container_tag(self, project_path, tag_name):
+    def delete_container_tag(self, project_path, tag_name, repo_path=None):
         if not self.url or not self.token:
             return False, "GitLab config with URL and token is missing."
         
         import gitlab
         try:
             gl = gitlab.Gitlab(self.url, private_token=self.token, ssl_verify=False)
-            project = gl.projects.get(project_path)
+            target_repo_path = repo_path or project_path
+            try:
+                project = gl.projects.get(target_repo_path)
+            except gitlab.exceptions.GitlabGetError as e:
+                if e.response_code == 404 and '/' in target_repo_path:
+                    parent_path = target_repo_path.rsplit('/', 1)[0]
+                    project = gl.projects.get(parent_path)
+                else:
+                    raise e
+                    
             repos = project.repositories.list(get_all=True)
             if not repos:
-                return False, f"No container repositories found for project '{project_path}'."
+                return False, f"No container repositories found for project '{target_repo_path}'."
+                
+            matching_repos = [
+                r for r in repos
+                if getattr(r, 'path', '').lower() == project_path.lower()
+            ]
+            if not matching_repos and project_path.lower() == project.path_with_namespace.lower():
+                matching_repos = [r for r in repos if not getattr(r, 'name', '')]
+            if not matching_repos:
+                return False, f"No matching container repository '{project_path}' found in project '{project.path_with_namespace}'."
                 
             deleted = False
-            for repo in repos:
+            for repo in matching_repos:
                 try:
                     repo.tags.delete(tag_name)
                     deleted = True
@@ -121,7 +139,7 @@ class ContainerRegistryManager:
                     return False, f"Error deleting tag '{tag_name}' in repository {repo.id}: {e}"
                     
             if deleted:
-                return True, f"Successfully deleted container tag '{tag_name}'."
+                return True, f"Successfully deleted container tag '{tag_name}' from '{project_path}'."
             else:
                 return True, f"Container tag '{tag_name}' not found (or already deleted)."
         except Exception as e:

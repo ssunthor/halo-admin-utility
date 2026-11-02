@@ -139,6 +139,8 @@ class GitProject(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     project_path = Column(String(255), nullable=False, unique=True)
     project_name = Column(String(100), nullable=False)
+    repo_path = Column(String(255), nullable=True)
+    subpath = Column(String(255), nullable=True)
     project_type = Column(SQLEnum(ProjectType), default=ProjectType.APPLICATION)
     
     is_deprecated = Column(Boolean, default=False)
